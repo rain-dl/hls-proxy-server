@@ -1,5 +1,5 @@
 # hls-proxy-server
-A simple http server to automatic proxy hls stream.
+A simple http server to automatic proxy hls streams.
 
 **Usage:** python3 hls-proxy-server.py [-h] -p PORT -d DIRECTORY -c CONF</br>
 &ensp;&ensp;PORT: The server will listen on 0.0.0.0:PORT.</br>
