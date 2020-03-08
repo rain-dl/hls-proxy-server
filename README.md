@@ -9,7 +9,7 @@ A simple http server to automatic proxy hls stream.
 The format of proxy configuration file:
 ```
 {
-	"hls_proxys": {
+	"hls_proxies": {
 		"/stream1.m3u8": {
 			"url": "http://xxx.xxx.xxx.xxx/xxx/1.m3u8",
 			"cleanup": 180
