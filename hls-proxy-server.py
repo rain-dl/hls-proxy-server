@@ -20,6 +20,7 @@ import json
 import argparse
 import os
 import logging
+import time
 
 logger = logging.getLogger("HLS Downloader")
 logger.setLevel(logging.DEBUG)
@@ -38,7 +39,7 @@ class HlsProxyProcess:
         self.m3u8file = m3u8file
         self.cleanup_time = cleanup_time
         script = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'hls-downloader.py')
-        cmd = ['python3', script, '-d', self.m3u8dir, '-m', self.m3u8file, '-s', '6', self.url]
+        cmd = ['python3', script, '-d', self.m3u8dir, '-m', self.m3u8file, '-s', '6', '-r', '3', self.url]
         self.process = subprocess.Popen(cmd, shell=False)
         logger.info('Launched hls-downloader to proxy %s.' % (self.url))
         self.cleanup_timer = Timer(self.cleanup_time, self.cleanup)
@@ -77,6 +78,13 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                 m3u8file = os.path.basename(self.path)
                 self.process_map[self.path] = HlsProxyProcess(self.process_map, self.path, hls_proxy['url'], m3u8dir, m3u8file, hls_proxy['cleanup'])
                 logger.info("Hls proxy for path %s launched" % (str(self.path)))
+
+                time.sleep(1)
+                m3u8fullname = os.path.join(m3u8dir, m3u8file)
+                retry = 10
+                while retry > 0 and not os.path.exists(m3u8fullname):
+                    retry -= 1
+                    time.sleep(0.5)
             else:
                 self.process_map[self.path].reset_cleanup_timer()
                 logger.info("Cleanup time for hls proxy %s reseted." % (str(self.path)))

@@ -16,7 +16,7 @@ import os
 tail_mode = False   # 是否进行断点续传
 tail_dur = 0    # 如果进行断点续传，该时间点前的视频无需再下载，之后的需要重新下载
 pool_size = 5   # ts视频文件块多协程下载时使用的协程池大小
-data_timeout = 4    # 单个ts视频文件下载的超时时间
+data_timeout = 3    # 单个ts视频文件下载的超时时间
 retry_sleep = 2     #单个ts视频文件下载超时后，需要再等待多少秒再进行重试
 
 # logger用于配置和发送日志消息。可以通过logging.getLogger(name)获取logger对象，如果不指定name则返回root对象
@@ -48,6 +48,7 @@ parser.add_argument('-d', '--directory', type=str, help='Output directory for m3
 parser.add_argument('-m', '--m3u8', type=str, help='Output m3u8 File')   # 输出的m3u8文件
 parser.add_argument('-s', '--m3u8size', type=int, help='Output m3u8 list size')   # 输出的m3u8文件的条目数量
 parser.add_argument('-t', '--tail_time', type=int, help='Tail Mode (Time)')   # 用于断点续传，该时间点前的视频无需再下载，之后的需要重新下载
+parser.add_argument('-r', '--retry', type=int, default=10, help='Retry count')   # 下载ts片段的最大重试次数
 parser.add_argument('-a', '--append', dest='append', action='store_true', help='Append Mode')   # store_true表示如果解析到该项则赋值为True
 parser.add_argument('--header', default="", type=str, help='Header (JSON)')     # 网络请求头键值对的JSON对象序列化得到的二进制文件
 parser.add_argument('--cookie', default="", type=str, help='Cookie (JSON)')     # cookie键值对的JSON对象序列化得到的二进制文件
@@ -156,7 +157,7 @@ new_end = -1
 
 chunk_retry_limit = 10  # 网络请求重试次数上限
 chunk_retry = 0     # 网络请求重试计数器
-chunk_retry_time = 10   # 每一次请求失败后需等待多少秒后再进行重试
+chunk_retry_time = 3   # 每一次请求失败后需等待多少秒后再进行重试
 
 last_write = -1 # 当file_mode为True时，该变量才起作用，记录最后一个写入输出文件的ts文件对应的索引
 
@@ -224,7 +225,7 @@ while True:
 
     for segment in chunklist.segments:
         seg_urls[seq] = urljoin(stream_uri, segment.uri)
-        seg_durations[seq] = segment.duration;
+        seg_durations[seq] = segment.duration
         logger.info(seg_urls[seq])
         sleep_dur = segment.duration
         seq = seq + 1
@@ -311,7 +312,10 @@ while True:
                                 output_playlist_files_obsoleted.append(output_playlist_entries[0]['name'])
                                 del output_playlist_entries[0]
                             while len(output_playlist_files_obsoleted) > 0:
-                                os.remove(os.path.join(args.directory, output_playlist_files_obsoleted[0]))
+                                try:
+                                    os.remove(os.path.join(args.directory, output_playlist_files_obsoleted[0]))
+                                except Exception as e:
+                                    logger.error(str(e))
                                 del output_playlist_files_obsoleted[0]
                             output_playlist.sequence = max(last_write - out_m3u8_size, 0)
                         op = output_playlist.generate()
@@ -342,7 +346,7 @@ while True:
                 logger.error(str(e))
                 logger.info("Content Problem, Retrying for %d" % (seq))
                 error_count[seq] = error_count[seq] + 1
-                if error_count[seq] > 10:
+                if error_count[seq] > args.retry:
                     logger.warning("Seq %d Failed" % (seq))
                     # if file_mode:
                     fetched_data[seq] = None
