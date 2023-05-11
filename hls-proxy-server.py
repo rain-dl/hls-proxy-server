@@ -5,7 +5,7 @@
 # Author:      RAiN
 #
 # Created:     05-03-2020
-# Copyright:   (c) RAiN 2020
+# Copyright:   (c) RAiN 2023
 # Licence:     GPL
 #-------------------------------------------------------------------------------
 
@@ -92,6 +92,10 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                 self.process_map[self.path].reset_cleanup_timer()
                 logger.debug("Cleanup time for hls proxy %s reseted." % (str(self.path)))
         super().do_GET()
+
+    def log_request(self, code='-', size='-'):
+        if self.verbose:
+            SimpleHTTPRequestHandler.log_request(self, code, size)
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     pass
