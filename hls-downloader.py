@@ -10,47 +10,51 @@ import json
 from m3u8_generator import PlaylistGenerator
 import os
 from time import time, sleep
-import requests
+import pycurl
+from io import BytesIO
+import certifi
 
-try:
-    import pycurl
-    from io import BytesIO
-    import certifi
-    use_pycurl = True
-except ImportError:
-    use_pycurl = False
-
-connect_timeout = 2
-
+playlist_download_timeout = 6
 playlist_max_retry = 10  # 网络请求重试次数上限
 playlist_retry_delay = 1   # 每一次请求失败后需等待多少秒后再进行重试
 
 thread_pool_size = 8   # ts视频文件块多协程下载时使用的协程池大小
-segment_download_timeout = 6    # 单个ts视频文件下载的超时时间
 segment_max_retry = 10
 segment_retry_delay = 1     #单个ts视频文件下载超时后，需要再等待多少秒再进行重试
 
-def request_url(url, connect_timeout = 10, read_timeout = 30):
-    if use_pycurl:
-        buffer = BytesIO()
-        c = pycurl.Curl()
-        c.setopt(c.URL, url)
-        c.setopt(c.WRITEDATA, buffer)
-        c.setopt(c.CAINFO, certifi.where())
-        c.setopt(c.FOLLOWLOCATION, True)
-        c.setopt(pycurl.TIMEOUT_MS, read_timeout * 1000)
-        c.perform()
-        status_code = c.getinfo(c.RESPONSE_CODE)
-        c.close()
+def request_url(url, timeout = 30, retry = 3, retry_delay = 1, header = None, cookie = None):
+    buffer = BytesIO()
+    c = pycurl.Curl()
+    c.setopt(pycurl.URL, url)
+    c.setopt(pycurl.WRITEDATA, buffer)
+    c.setopt(pycurl.CAINFO, certifi.where())
+    c.setopt(pycurl.FOLLOWLOCATION, True)
+    c.setopt(pycurl.TIMEOUT_MS, int(timeout * 1000))
+    if header is not None:
+        c.setopt(pycurl.HTTPHEADER, header)
+    if cookie is not None:
+        c.setopt(pycurl.COOKIE, cookie)
 
-        if status_code != 200:
-            raise RuntimeError('Failed to get content, status code: %d.' % (status_code))
+    done = False
+    for i in range(retry):
+        try:
+            c.setopt(pycurl.RESUME_FROM, buffer.tell())
+            c.perform()
+            status_code = c.getinfo(pycurl.RESPONSE_CODE)
+            c.close()
+            if status_code != 200 and status_code != 206:
+                raise RuntimeError('Failed to get content, status code: %d.' % (status_code))
+            done = True
+            break
+        except pycurl.error as e:
+            if e.args[0] == 28:
+                logger.warning("Download %s timeout, retry and resume from %d" % (url, buffer.tell()))
+            else:
+                sleep(retry_delay)
+
+    if done:
         return buffer.getvalue()
-
-    resp = requests.get(url, timeout=(connect_timeout, read_timeout))
-    if resp.status_code != 200:
-        raise RuntimeError('Failed to get content, status code: %d.' % (resp.status_code))
-    return resp.content
+    raise RuntimeError('Download failed.')
 
 playlist_retry_count = 0     # 网络请求重试计数器
 
@@ -124,22 +128,18 @@ def get_one(seq, url, duration):
     retry_count = 0
     while True:
         try:
-            content = request_url(url, connect_timeout, segment_download_timeout)
+            content = request_url(url, duration, segment_max_retry)
             decode_and_write(content, seq, duration)
             break
         except Exception as e:
             logger.error(str(e))
-            logger.warning("Content Problem, Retrying for %d" % (seq))
-            retry_count = retry_count + 1
-            if retry_count > segment_max_retry:
-                logger.error("Seq %d Failed" % (seq))
+            logger.error("Seq %d Failed" % (seq))
 
-                out_f_lock.acquire()
-                fetched_segments[seq] = None
-                out_f_lock.release()
-                update_playlist()
-                break
-            sleep(segment_retry_delay)
+            out_f_lock.acquire()
+            fetched_segments[seq] = None
+            out_f_lock.release()
+            update_playlist()
+            break
 
 if __name__ == '__main__':
     # logger用于配置和发送日志消息。可以通过logging.getLogger(name)获取logger对象，如果不指定name则返回root对象
@@ -170,8 +170,8 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--m3u8size', type=int, help='Output m3u8 list size')   # 输出的m3u8文件的条目数量
     parser.add_argument('-r', '--retry', type=int, default=segment_max_retry, help='Retry count')   # 下载ts片段的最大重试次数
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode')
-    parser.add_argument('--header', default="", type=str, help='Header (JSON)')     # 网络请求头键值对的JSON对象序列化得到的二进制文件
-    parser.add_argument('--cookie', default="", type=str, help='Cookie (JSON)')     # cookie键值对的JSON对象序列化得到的二进制文件
+    parser.add_argument('--header', default=None, type=str, help='HTTP header')
+    parser.add_argument('--cookie', default=None, type=str, help='HTTP Cookie header')
     args = parser.parse_args()
 
     if args.verbose:
@@ -182,7 +182,6 @@ if __name__ == '__main__':
 
     segment_max_retry = args.retry
 
-    control = requests.Session()    # m3u8文件下载会话
     thread_pool = ThreadPoolExecutor(max_workers=thread_pool_size)
     output_playlist_entries = []
     output_playlist = PlaylistGenerator(playlist_entries=output_playlist_entries, version=3)   # 输出Playlist
@@ -205,35 +204,12 @@ if __name__ == '__main__':
         except:
             pass
 
-    #------------------------读取请求头和Cookie配置文件-----------------------
-    cookie_file = args.cookie
-    header_file = args.header
-    cookie_dict = dict()
-    header_dict = dict()
     try:
-        if len(cookie_file) > 0:
-            with open(cookie_file, "rb") as cookie_f:
-                cookie_json = json.load(cookie_f)
-                for ele in cookie_json:
-                    key = ele["name"]
-                    val = ele["value"]
-                    cookie_dict[key] = val
-
-        if len(header_file) > 0:
-            with open(header_file, "rb") as header_f:
-                header_json = json.load(header_f)
-                for ele in header_json:
-                    header_dict.update(ele)
-    except IOError as e:
-        print(e)
-    logger.debug(cookie_dict)
-    logger.debug(header_dict)
-    #------------------------------------------------------------------------
-
-    mpl_res = control.get(playlist_url, cookies=cookie_dict, headers=header_dict)
-    content = mpl_res.content
-    playlist_url = mpl_res.url
-    logger.info("Main Playlist %s ST %d" % (playlist_url, mpl_res.status_code))
+        content = request_url(playlist_url, header=args.header, cookie=args.cookie)
+    except Exception as e:
+        logger.error(str(e))
+        logger.error('Failed to access main playlist.')
+        exit(-1)
 
     #--------------------------根据分辨率或者比特率，解析二级m3u8（如果有的话）---------------------------
     content = content.decode('utf8')
@@ -264,30 +240,13 @@ if __name__ == '__main__':
     logger.info("Chunk List: %s" % (stream_uri))
     #------------------------------------------------------------------------------------------------------
 
-
     while True:
         try:
-            pl_res = control.get(stream_uri, timeout=(2, 2), cookies=cookie_dict, headers=header_dict)
-        #------------------------------------如果出错则进行重试------------------------------------
+            content = request_url(stream_uri, playlist_download_timeout, playlist_max_retry, header=args.header, cookie=args.cookie)
         except Exception as e:
             logger.error("Cannot Get Chunklist")
-            if playlist_retry_count < playlist_max_retry:
-                sleep(playlist_retry_delay)
-                playlist_retry_count += 1
-                continue
-            else:
-                break
-        if not pl_res.status_code == requests.codes.ok:
-            logger.error("Cannot Get Chunklist")
-            if playlist_retry_count < playlist_max_retry:
-                sleep(playlist_retry_delay)
-                playlist_retry_count += 1
-                continue
-            else:
-                break
-        #---------------------------------------------------------------------------------------------
-        playlist_retry_count = 0 # 重置网络请求重试计数器
-        content = pl_res.content
+            break
+
         content = content.decode('utf8')
         chunklist = m3u8.loads(content)
 
