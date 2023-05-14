@@ -9,7 +9,6 @@
 # Licence:     GPL
 #-------------------------------------------------------------------------------
 
-import sys
 from http.server import SimpleHTTPRequestHandler
 from http.server import HTTPServer
 from socketserver import ThreadingMixIn
@@ -82,10 +81,11 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                 self.process_map[self.path] = HlsProxyProcess(self.process_map, self.path, hls_proxy['url'], m3u8dir, m3u8file, hls_proxy['cleanup'], self.verbose)
                 logger.info("Hls proxy for path %s launched" % (str(self.path)))
 
+                launch_time = time.time()
                 time.sleep(1)
                 m3u8fullname = os.path.join(m3u8dir, m3u8file)
-                retry = 10
-                while retry > 0 and not os.path.exists(m3u8fullname):
+                retry = 20
+                while retry > 0 and (not os.path.exists(m3u8fullname) or os.path.getmtime(m3u8fullname) < launch_time):
                     retry -= 1
                     time.sleep(0.5)
             else:

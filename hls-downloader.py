@@ -6,13 +6,13 @@ import m3u8
 from urllib.parse import urljoin
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
-import json
 from m3u8_generator import PlaylistGenerator
 import os
-from time import time, sleep
 import pycurl
 from io import BytesIO
 import certifi
+import gevent
+import signal
 
 playlist_download_timeout = 6
 playlist_max_retry = 10  # 网络请求重试次数上限
@@ -50,7 +50,7 @@ def request_url(url, timeout = 30, retry = 3, retry_delay = 1, header = None, co
             if e.args[0] == 28:
                 logger.warning("Download %s timeout, retry and resume from %d" % (url, buffer.tell()))
             else:
-                sleep(retry_delay)
+                gevent.sleep(retry_delay)
 
     if done:
         return buffer.getvalue()
@@ -200,7 +200,11 @@ if __name__ == '__main__':
         try:
             chunklist = m3u8.load(out_m3u8)
             for segment in chunklist.segments:
-                output_playlist_entries.append({ 'name' : segment.uri, 'duration' : segment.duration})
+                #output_playlist_entries.append({ 'name' : segment.uri, 'duration' : segment.duration})
+                try:
+                    os.remove(os.path.join(args.directory, segment.uri))
+                except Exception as e:
+                    pass
         except:
             pass
 
@@ -240,7 +244,17 @@ if __name__ == '__main__':
     logger.info("Chunk List: %s" % (stream_uri))
     #------------------------------------------------------------------------------------------------------
 
-    while True:
+    quit = False
+    def shutdown():
+        global quit
+        if not quit:
+            logger.info('Shutting down...')
+            quit = True
+
+    gevent.signal_handler(signal.SIGTERM, shutdown)
+    gevent.signal_handler(signal.SIGINT, shutdown)
+
+    while not quit:
         try:
             content = request_url(stream_uri, playlist_download_timeout, playlist_max_retry, header=args.header, cookie=args.cookie)
         except Exception as e:
@@ -252,7 +266,7 @@ if __name__ == '__main__':
 
         if chunklist.media_sequence == None:
             logger.warning("Incorrect Chunklist")
-            sleep(playlist_retry_delay)
+            gevent.sleep(playlist_retry_delay)
             continue
 
         target_dur = chunklist.target_duration
@@ -276,11 +290,11 @@ if __name__ == '__main__':
 
         sleep_dur = target_dur / 2 # 休眠一段时间再获取下一个m3u8文件
 
-        if list_end:    # 已经加载完了所有ts文件的下载地址
+        if list_end or quit:
             break
 
         logger.debug("Sleep for %d secs before reloading" % (sleep_dur))
-        sleep(sleep_dur)
+        gevent.sleep(sleep_dur)
 
-    logger.info("Stream Ended")
     thread_pool.shutdown()
+    logger.info("Ended.")
