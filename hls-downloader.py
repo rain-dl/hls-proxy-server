@@ -30,6 +30,7 @@ def request_url(url, timeout = 30, retry = 3, retry_delay = 1, header = None, co
     c.setopt(pycurl.CAINFO, certifi.where())
     c.setopt(pycurl.FOLLOWLOCATION, True)
     c.setopt(pycurl.TIMEOUT_MS, int(timeout * 1000))
+    c.setopt(pycurl.FAILONERROR, True)
     if header is not None:
         c.setopt(pycurl.HTTPHEADER, header)
     if cookie is not None:
@@ -40,21 +41,19 @@ def request_url(url, timeout = 30, retry = 3, retry_delay = 1, header = None, co
         try:
             c.setopt(pycurl.RESUME_FROM, buffer.tell())
             c.perform()
-            status_code = c.getinfo(pycurl.RESPONSE_CODE)
             c.close()
-            if status_code != 200 and status_code != 206:
-                raise RuntimeError('Failed to get content, status code: %d.' % (status_code))
             done = True
             break
         except pycurl.error as e:
-            if e.args[0] == 28:
-                logger.warning("Download %s timeout, retry and resume from %d" % (url, buffer.tell()))
+            if e.args[0] == pycurl.E_OPERATION_TIMEDOUT:
+                logger.warning('Download %s timeout, retry and resume from %d' % (url, buffer.tell()))
             else:
+                logger.warning('Download %s failed, error: %s, retrying' % (url, str(e)))
                 gevent.sleep(retry_delay)
 
     if done:
         return buffer.getvalue()
-    raise RuntimeError('Download failed.')
+    raise RuntimeError('Download %s failed.' % (url))
 
 playlist_retry_count = 0     # 网络请求重试计数器
 
@@ -76,8 +75,8 @@ def update_playlist():
         seq = fetching_segments[0]
         if seq in fetched_segments:
             if fetched_segments[seq]:
-                logger.debug("Writing %d to %s" % (seq, out_m3u8))
-                filename = "%012d" % (seq) + ".ts"
+                logger.debug('Writing %d to %s' % (seq, out_m3u8))
+                filename = '%012d' % (seq) + '.ts'
                 duration = segment_durations[seq]
                 output_playlist_entries.append({ 'name' : filename, 'duration' : duration })
                 if not output_playlist.end_playlist:
@@ -92,11 +91,11 @@ def update_playlist():
                         del output_playlist_files_obsoleted[0]
                     output_playlist.sequence = max(seq - out_m3u8_size, 0)
                 op = output_playlist.generate()
-                m3u8_f = open(out_m3u8, "w")
+                m3u8_f = open(out_m3u8, 'w')
                 m3u8_f.write(op)
                 m3u8_f.close()
             else:
-                logger.debug("Skip writing %d to %s" % (seq, out_m3u8));
+                logger.debug('Skip writing %d to %s' % (seq, out_m3u8));
             fetching_segments.remove(seq)
             del fetched_segments[seq]
             del segment_durations[seq]
@@ -107,9 +106,9 @@ def update_playlist():
 def decode_and_write(content, seq, duration):
     global fetched_segments
 
-    filename = os.path.join(args.directory, "%012d"%(seq) + ".ts")
-    logger.debug("Write to %s" % (filename))
-    video_f = open(filename, "wb")
+    filename = os.path.join(args.directory, '%012d'%(seq) + '.ts')
+    logger.debug('Write to %s' % (filename))
+    video_f = open(filename, 'wb')
     video_f.write(content)
     video_f.close()
 
@@ -123,7 +122,7 @@ def decode_and_write(content, seq, duration):
 def get_one(seq, url, duration):
     global fetched_segments
 
-    logger.debug("Processing Segment #%d, Url: %s" % (seq, url))
+    logger.debug('Processing segment #%d, url: %s' % (seq, url))
 
     retry_count = 0
     while True:
@@ -133,7 +132,7 @@ def get_one(seq, url, duration):
             break
         except Exception as e:
             logger.error(str(e))
-            logger.error("Seq %d Failed" % (seq))
+            logger.error('Failed to download segment %d.' % (seq))
 
             out_f_lock.acquire()
             fetched_segments[seq] = None
@@ -143,7 +142,7 @@ def get_one(seq, url, duration):
 
 if __name__ == '__main__':
     # logger用于配置和发送日志消息。可以通过logging.getLogger(name)获取logger对象，如果不指定name则返回root对象
-    logger = logging.getLogger("HLS Downloader")
+    logger = logging.getLogger('HLS Downloader')
     logger.setLevel(logging.INFO)
 
     # handler用于将日志记录发送到合适的目的地
@@ -151,13 +150,13 @@ if __name__ == '__main__':
     ch.setLevel(logging.DEBUG)
 
     # formatter用于指定日志记录输出的具体格式
-    formatter = logging.Formatter("%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s")
+    formatter = logging.Formatter('%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s')
     ch.setFormatter(formatter)
 
     logger.addHandler(ch)   # 一个logger对象可以通过addHandler方法添加多个handler，每个handler又可以定义不同日志级别，以实现日志分级过滤显示
 
     #-----------------------------创建文件Handler并将其绑定到logger-------------------------
-    #logf = logging.FileHandler("hls.log")
+    #logf = logging.FileHandler('hls.log')
     #logf.setLevel(logging.DEBUG)
     #logf.setFormatter(formatter)
     #logger.addHandler(logf)
@@ -178,7 +177,7 @@ if __name__ == '__main__':
         logger.setLevel(logging.DEBUG)
 
     playlist_url = args.url
-    logger.info("Playlist URL: " + playlist_url)
+    logger.info('Playlist URL: ' + playlist_url)
 
     segment_max_retry = args.retry
 
@@ -191,7 +190,7 @@ if __name__ == '__main__':
 
     out_m3u8 = args.m3u8
     if out_m3u8 == None or len(out_m3u8) == 0:
-        out_m3u8 = "index.m3u8"
+        out_m3u8 = 'index.m3u8'
     out_m3u8 = os.path.join(args.directory, out_m3u8)
     out_m3u8_size = args.m3u8size
     if out_m3u8_size == None or out_m3u8_size <= 0:
@@ -224,10 +223,10 @@ if __name__ == '__main__':
     for playlist in variant_m3u8.playlists:
         if playlist.stream_info.resolution :
             resolution = int(playlist.stream_info.resolution[1])
-            logger.info("Stream at %dp detected!" % resolution)
+            logger.info('Stream at %dp detected!' % resolution)
         else:
             resolution = int(playlist.stream_info.bandwidth)
-            logger.info("Stream with bandwidth %d detected!" % resolution)
+            logger.info('Stream with bandwidth %d detected!' % resolution)
         streams_uri[resolution] = urljoin(playlist_url, playlist.uri)
     #------------------------------------------------------------------------------------------------------
 
@@ -237,11 +236,11 @@ if __name__ == '__main__':
 
     if auto_highest and len(variant_m3u8.playlists) > 0:    # 如果存在二级m3u8索引
         stream_res = max(streams_uri)
-        logger.info("Stream Picked: %dp" % stream_res)
+        logger.info('Stream picked: %dp' % stream_res)
         stream_uri = streams_uri[stream_res]
     else: # 如果没有二级m3u8索引，那么就选一级m3u8索引即可（说明没有可选的其他画质）
         stream_uri = playlist_url
-    logger.info("Chunk List: %s" % (stream_uri))
+    logger.info('Chunk list: %s' % (stream_uri))
     #------------------------------------------------------------------------------------------------------
 
     quit = False
@@ -258,14 +257,14 @@ if __name__ == '__main__':
         try:
             content = request_url(stream_uri, playlist_download_timeout, playlist_max_retry, header=args.header, cookie=args.cookie)
         except Exception as e:
-            logger.error("Cannot Get Chunklist")
-            break
+            logger.error('Failed to download chunk list.')
+            continue
 
         content = content.decode('utf8')
         chunklist = m3u8.loads(content)
 
         if chunklist.media_sequence == None:
-            logger.warning("Incorrect Chunklist")
+            logger.warning('Incorrect chunk list')
             gevent.sleep(playlist_retry_delay)
             continue
 
@@ -293,8 +292,8 @@ if __name__ == '__main__':
         if list_end or quit:
             break
 
-        logger.debug("Sleep for %d secs before reloading" % (sleep_dur))
+        logger.debug('Sleep for %d secs before reloading' % (sleep_dur))
         gevent.sleep(sleep_dur)
 
     thread_pool.shutdown()
-    logger.info("Ended.")
+    logger.info('Ended.')
