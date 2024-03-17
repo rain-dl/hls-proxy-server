@@ -22,7 +22,11 @@ thread_pool_size = 8   # ts视频文件块多协程下载时使用的协程池�
 segment_max_retry = 10
 segment_retry_delay = 1     #单个ts视频文件下载超时后，需要再等待多少秒再进行重试
 
+retry_by_resume = True
+
 def request_url(url, timeout = 30, retry = 3, retry_delay = 1, header = None, cookie = None):
+    global retry_by_resume
+
     buffer = BytesIO()
     c = pycurl.Curl()
     c.setopt(pycurl.URL, url)
@@ -39,14 +43,23 @@ def request_url(url, timeout = 30, retry = 3, retry_delay = 1, header = None, co
     done = False
     for i in range(retry):
         try:
-            c.setopt(pycurl.RESUME_FROM, buffer.tell())
+            if retry_by_resume:
+                c.setopt(pycurl.RESUME_FROM, buffer.tell())
+            else:
+                buffer.truncate(0)
             c.perform()
             c.close()
             done = True
             break
         except pycurl.error as e:
             if e.args[0] == pycurl.E_OPERATION_TIMEDOUT:
-                logger.warning('Download %s timeout, retry and resume from %d' % (url, buffer.tell()))
+                if retry_by_resume:
+                    logger.warning('Download %s timeout, retry and resume from %d' % (url, buffer.tell()))
+                else:
+                    logger.warning('Download %s timeout, retrying' % (url))
+            elif e.args[0] == pycurl.E_RANGE_ERROR:
+                logger.warning('Server doesn''t support byte ranges, retry with full download.')
+                retry_by_resume = False
             else:
                 logger.warning('Download %s failed, error: %s, retrying' % (url, str(e)))
                 gevent.sleep(retry_delay)

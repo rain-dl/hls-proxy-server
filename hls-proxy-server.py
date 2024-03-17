@@ -18,8 +18,10 @@ from threading import Timer
 import json
 import argparse
 import os
+import shutil
 import logging
 import time
+import hashlib
 
 logger = logging.getLogger("HLS Downloader")
 logger.setLevel(logging.INFO)
@@ -50,6 +52,7 @@ class HlsProxyProcess:
         self.process.terminate()
         if self.path in self.process_map.keys():
             self.process_map.pop(self.path)
+        shutil.rmtree(self.m3u8dir)
         logger.info('hls-downloader for %s terminated.' % (self.url))
 
     def reset_cleanup_timer(self):
@@ -58,10 +61,11 @@ class HlsProxyProcess:
         self.cleanup_timer.start()
 
 class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, process_map=None, hls_proxy_config=None, verbose=False, **kwargs):
+    def __init__(self, *args, process_map=None, cleanup_default=120, hls_proxy_config=None, verbose=False, **kwargs):
         self.process_map = process_map
-        self.hls_proxy_config = hls_proxy_config
+        self.hls_proxy_config = hls_proxy_config if hls_proxy_config is not None else { "hls_proxies": [] }
         self.verbose = verbose
+        self.cleanup_default = cleanup_default
         super().__init__(*args, **kwargs)
 
     def do_GET(self):
@@ -78,7 +82,8 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
             if self.path not in self.process_map.keys():
                 m3u8dir = os.path.join(self.directory, os.path.dirname(self.path)[1:])
                 m3u8file = os.path.basename(self.path)
-                self.process_map[self.path] = HlsProxyProcess(self.process_map, self.path, hls_proxy['url'], m3u8dir, m3u8file, hls_proxy['cleanup'], self.verbose)
+                self.process_map[self.path] = HlsProxyProcess(self.process_map, self.path, hls_proxy['url'], m3u8dir, m3u8file,
+                                                              hls_proxy.get('cleanup', self.cleanup_default), self.verbose)
                 logger.info("Hls proxy for path %s launched" % (str(self.path)))
 
                 launch_time = time.time()
@@ -91,7 +96,49 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
             else:
                 self.process_map[self.path].reset_cleanup_timer()
                 logger.debug("Cleanup time for hls proxy %s reseted." % (str(self.path)))
+
+        if self.path.startswith('/proxy/'):
+            url, base_url, file_name = self.get_proxy_url(self.path)
+            hash = self.get_url_hash(base_url)
+            if hash not in self.process_map.keys():
+                m3u8dir = os.path.join(self.directory, hash)
+                m3u8file = file_name
+                self.process_map[hash] = HlsProxyProcess(self.process_map, hash, url, m3u8dir, m3u8file, self.cleanup_default, self.verbose)
+                logger.info("Hls proxy for path %s launched" % (url))
+
+                launch_time = time.time()
+                time.sleep(1)
+                m3u8fullname = os.path.join(m3u8dir, m3u8file)
+                retry = 20
+                while retry > 0 and (not os.path.exists(m3u8fullname) or os.path.getmtime(m3u8fullname) < launch_time):
+                    retry -= 1
+                    time.sleep(0.5)
+            else:
+                self.process_map[hash].reset_cleanup_timer()
+                logger.debug("Cleanup time for hls proxy %s reseted." % (str(self.path)))
+
         super().do_GET()
+
+    def translate_path(self, path):
+        if path.startswith('/proxy/'):
+            _, base_url, file_name = self.get_proxy_url(path)
+            hash = self.get_url_hash(base_url)
+            return os.path.join(os.path.join(self.directory, hash), file_name)
+        return super().translate_path(path)
+
+    def get_proxy_url(self, path):
+        url = path[7:]
+
+        # abandon query parameters
+        base_url = url.split('?',1)[0]
+        base_url = base_url.split('#',1)[0]
+        base_url, file_name = base_url.rsplit('/', 1)
+        return url, base_url, file_name
+
+    def get_url_hash(self, url):
+        md5 = hashlib.md5()
+        md5.update(url.encode('utf-8'))
+        return md5.hexdigest()
 
     def log_request(self, code='-', size='-'):
         if self.verbose:
@@ -104,23 +151,26 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Crawl a HLS Playlist')
     parser.add_argument('-p', '--port', type=int, required=True, help='Binding port of HTTP server.')
     parser.add_argument('-d', '--directory', type=str, required=True, help='HTTP server base directory.')
-    parser.add_argument('-c', '--conf', type=str, required=True, help='HLS proxy path mapping config.')
+    parser.add_argument('-e', '--cleanup', type=int, default=120, help='The default cleanup time.')
+    parser.add_argument('-c', '--conf', type=str, default=None, help='HLS proxy path mapping config.')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode.')
     args = parser.parse_args()
 
-    try:
-        with open(args.conf, 'r') as fp:
-            hls_proxy_config = json.load(fp)
-    except Exception as ex:
-        logger.error("Failed to load hls proxy path mapping config file. Error: %s" %(str(ex)))
-        exit(2)
+    hls_proxy_config = None
+    if args.conf is not None:
+        try:
+            with open(args.conf, 'r') as fp:
+                hls_proxy_config = json.load(fp)
+        except Exception as ex:
+            logger.error("Failed to load hls proxy path mapping config file. Error: %s" %(str(ex)))
 
     if args.verbose:
         logger.setLevel(logging.DEBUG)
 
     process_map = {}
 
-    HandlerClass = functools.partial(HLSProxyHTTPRequestHandler, directory=args.directory, process_map=process_map, hls_proxy_config=hls_proxy_config, verbose=args.verbose)
+    HandlerClass = functools.partial(HLSProxyHTTPRequestHandler, directory=args.directory, process_map=process_map,
+                                     cleanup_default=args.cleanup, hls_proxy_config=hls_proxy_config, verbose=args.verbose)
     ServerClass  = ThreadingHTTPServer
     #Protocol     = "HTTP/1.0"
 
