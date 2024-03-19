@@ -103,7 +103,8 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
             if hash not in self.process_map.keys():
                 m3u8dir = os.path.join(self.directory, hash)
                 m3u8file = file_name
-                self.process_map[hash] = HlsProxyProcess(self.process_map, hash, url, m3u8dir, m3u8file, self.cleanup_default, self.verbose)
+                url, cleanup_time = self.extract_cleanup_time(url)
+                self.process_map[hash] = HlsProxyProcess(self.process_map, hash, url, m3u8dir, m3u8file, cleanup_time, self.verbose)
                 logger.info("Hls proxy for path %s launched" % (url))
 
                 launch_time = time.time()
@@ -139,6 +140,29 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
         md5 = hashlib.md5()
         md5.update(url.encode('utf-8'))
         return md5.hexdigest()
+
+    def extract_cleanup_time(self, url):
+        ss = url.split('?',1)
+        if len(ss) == 1:
+            return url, {}
+        url = ss[0]
+        params = ss[1].split('&')
+        cleanup_time = self.cleanup_default
+        param_str = ''
+        for param in params:
+            p = param.split('=')
+            if p[0] == 'cleanup':
+                try:
+                    cleanup_time = int(p[1])
+                except ValueError:
+                    cleanup_time = self.cleanup_default
+            else:
+                if len(param_str) > 0:
+                    param_str += '&'
+                param_str += param
+        if len(param_str) > 0:
+            url = url + '?' + param_str
+        return url, cleanup_time
 
     def log_request(self, code='-', size='-'):
         if self.verbose:
