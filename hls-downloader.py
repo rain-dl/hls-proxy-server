@@ -37,6 +37,8 @@ def request_url(url, timeout = 30, retry = 3, retry_delay = 1, header = None, co
     c.setopt(pycurl.FAILONERROR, True)
     if header is not None:
         c.setopt(pycurl.HTTPHEADER, header)
+    if header is None or len([x for x in header if str.lower(x).startswith('user-agent')]) == 0:
+        c.setopt(pycurl.USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0')
     if cookie is not None:
         c.setopt(pycurl.COOKIE, cookie)
 
@@ -182,7 +184,7 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--m3u8size', type=int, help='Output m3u8 list size')   # 输出的m3u8文件的条目数量
     parser.add_argument('-r', '--retry', type=int, default=segment_max_retry, help='Retry count')   # 下载ts片段的最大重试次数
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode')
-    parser.add_argument('--header', default=None, type=str, help='HTTP header')
+    parser.add_argument('--header', action='append', type=str, help='HTTP header')
     parser.add_argument('--cookie', default=None, type=str, help='HTTP Cookie header')
     args = parser.parse_args()
 
