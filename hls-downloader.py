@@ -13,6 +13,7 @@ from io import BytesIO
 import certifi
 import gevent
 import signal
+from datetime import datetime
 
 playlist_download_timeout = 6
 playlist_max_retry = 10  # 网络请求重试次数上限
@@ -155,6 +156,39 @@ def get_one(seq, url, duration):
             update_playlist()
             break
 
+def get_stream_uri(playlist_url, header, cookie):
+    content = request_url(playlist_url, header=header, cookie=cookie)
+
+    #--------------------------根据分辨率或者比特率，解析二级m3u8（如果有的话）---------------------------
+    content = content.decode('utf8')
+    variant_m3u8 = m3u8.loads(content)
+    streams_uri = dict()
+
+    # 对于每一个ts视频列表，转化为分辨率-->uri或者比特率-->uri的映射关系，并保存在streams_uri中
+    for playlist in variant_m3u8.playlists:
+        if playlist.stream_info.resolution :
+            resolution = int(playlist.stream_info.resolution[1])
+            logger.info('Stream at %dp detected!' % resolution)
+        else:
+            resolution = int(playlist.stream_info.bandwidth)
+            logger.info('Stream with bandwidth %d detected!' % resolution)
+        streams_uri[resolution] = urljoin(playlist_url, playlist.uri)
+    #------------------------------------------------------------------------------------------------------
+
+    #-----------------------------选取最终要下载的ts视频列表对应的m3u8链接地址-----------------------------
+    auto_highest = True # 是否自动选取最高画质的那个ts视频列表
+    stream_res = 0
+
+    if auto_highest and len(variant_m3u8.playlists) > 0:    # 如果存在二级m3u8索引
+        stream_res = max(streams_uri)
+        logger.info('Stream picked: %dp' % stream_res)
+        stream_uri = streams_uri[stream_res]
+    else: # 如果没有二级m3u8索引，那么就选一级m3u8索引即可（说明没有可选的其他画质）
+        stream_uri = playlist_url
+    logger.info('Chunk list: %s' % (stream_uri))
+    #------------------------------------------------------------------------------------------------------
+    return stream_uri
+
 if __name__ == '__main__':
     # logger用于配置和发送日志消息。可以通过logging.getLogger(name)获取logger对象，如果不指定name则返回root对象
     logger = logging.getLogger('HLS Downloader')
@@ -184,6 +218,7 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--m3u8size', type=int, help='Output m3u8 list size')   # 输出的m3u8文件的条目数量
     parser.add_argument('-r', '--retry', type=int, default=segment_max_retry, help='Retry count')   # 下载ts片段的最大重试次数
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode')
+    parser.add_argument('--auto_refresh', type=int, default=0, help='Interval for refreshing the original url.')
     parser.add_argument('--header', action='append', type=str, help='HTTP header')
     parser.add_argument('--cookie', default=None, type=str, help='HTTP Cookie header')
     args = parser.parse_args()
@@ -223,40 +258,13 @@ if __name__ == '__main__':
             pass
 
     try:
-        content = request_url(playlist_url, header=args.header, cookie=args.cookie)
+        stream_uri = get_stream_uri(playlist_url, args.header, args.cookie)
     except Exception as e:
         logger.error(str(e))
         logger.error('Failed to access main playlist.')
         exit(-1)
 
-    #--------------------------根据分辨率或者比特率，解析二级m3u8（如果有的话）---------------------------
-    content = content.decode('utf8')
-    variant_m3u8 = m3u8.loads(content)
-    streams_uri = dict()
-
-    # 对于每一个ts视频列表，转化为分辨率-->uri或者比特率-->uri的映射关系，并保存在streams_uri中
-    for playlist in variant_m3u8.playlists:
-        if playlist.stream_info.resolution :
-            resolution = int(playlist.stream_info.resolution[1])
-            logger.info('Stream at %dp detected!' % resolution)
-        else:
-            resolution = int(playlist.stream_info.bandwidth)
-            logger.info('Stream with bandwidth %d detected!' % resolution)
-        streams_uri[resolution] = urljoin(playlist_url, playlist.uri)
-    #------------------------------------------------------------------------------------------------------
-
-    #-----------------------------选取最终要下载的ts视频列表对应的m3u8链接地址-----------------------------
-    auto_highest = True # 是否自动选取最高画质的那个ts视频列表
-    stream_res = 0
-
-    if auto_highest and len(variant_m3u8.playlists) > 0:    # 如果存在二级m3u8索引
-        stream_res = max(streams_uri)
-        logger.info('Stream picked: %dp' % stream_res)
-        stream_uri = streams_uri[stream_res]
-    else: # 如果没有二级m3u8索引，那么就选一级m3u8索引即可（说明没有可选的其他画质）
-        stream_uri = playlist_url
-    logger.info('Chunk list: %s' % (stream_uri))
-    #------------------------------------------------------------------------------------------------------
+    last_playlist_url_refresh_time = datetime.now()
 
     quit = False
     def shutdown():
@@ -306,6 +314,15 @@ if __name__ == '__main__':
 
         if list_end or quit:
             break
+
+        if args.auto_refresh > 0 and stream_uri != playlist_url and (datetime.now() - last_playlist_url_refresh_time).total_seconds() > args.auto_refresh:
+            try:
+                stream_uri = get_stream_uri(playlist_url, args.header, args.cookie)
+                last_playlist_url_refresh_time = datetime.now()
+                logger.info('Refreshed playlist URL: ' + stream_uri)
+            except Exception as e:
+                logger.error(str(e))
+                logger.error('Failed to refresh playlist url.')
 
         logger.debug('Sleep for %d secs before reloading' % (sleep_dur))
         gevent.sleep(sleep_dur)

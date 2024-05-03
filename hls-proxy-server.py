@@ -40,7 +40,7 @@ class HlsProxyProcess:
         self.m3u8file = m3u8file
         self.cleanup_time = cleanup_time
         script = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'hls-downloader.py')
-        cmd = ['python', script, '-d', self.m3u8dir, '-m', self.m3u8file, '-s', '3', '-r', '10', self.url]
+        cmd = ['python', script, '-d', self.m3u8dir, '-m', self.m3u8file, '-s', '3', '-r', '10', '--auto_refresh', '3600', self.url]
         if verbose:
             cmd.append('-v')
         self.process = subprocess.Popen(cmd, shell=False)
@@ -49,9 +49,11 @@ class HlsProxyProcess:
         self.cleanup_timer.start()
 
     def cleanup(self):
-        self.process.terminate()
+        logger.info('Terminating hls-downloader for %s...' % (self.url))
         if self.path in self.process_map.keys():
             self.process_map.pop(self.path)
+        self.process.terminate()
+        self.process.wait()
         shutil.rmtree(self.m3u8dir)
         logger.info('hls-downloader for %s terminated.' % (self.url))
 
@@ -144,7 +146,7 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
     def extract_cleanup_time(self, url):
         ss = url.split('?',1)
         if len(ss) == 1:
-            return url, {}
+            return url, self.cleanup_default
         url = ss[0]
         params = ss[1].split('&')
         cleanup_time = self.cleanup_default
