@@ -40,7 +40,7 @@ class HlsProxyProcess:
         self.m3u8file = m3u8file
         self.cleanup_time = cleanup_time
         script = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'hls-downloader.py')
-        cmd = ['python', script, '-d', self.m3u8dir, '-m', self.m3u8file, '-s', '3', '-r', '10', '--auto_refresh', '3600', self.url]
+        cmd = ['python', script, '-d', self.m3u8dir, '-m', self.m3u8file, '-s', '6', '-r', '10', '--auto_refresh', '3600', self.url]
         if verbose:
             cmd.append('-v')
         self.process = subprocess.Popen(cmd, shell=False)

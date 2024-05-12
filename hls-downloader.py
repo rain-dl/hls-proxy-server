@@ -34,7 +34,7 @@ def request_url(url, timeout = 30, retry = 3, retry_delay = 1, header = None, co
     c.setopt(pycurl.WRITEDATA, buffer)
     c.setopt(pycurl.CAINFO, certifi.where())
     c.setopt(pycurl.FOLLOWLOCATION, True)
-    c.setopt(pycurl.TIMEOUT_MS, int(timeout * 1000))
+    c.setopt(pycurl.TIMEOUT_MS, int(timeout * 1000) if retry_by_resume else int(timeout * 2000))
     c.setopt(pycurl.FAILONERROR, True)
     if header is not None:
         c.setopt(pycurl.HTTPHEADER, header)
