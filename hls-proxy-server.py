@@ -120,7 +120,10 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                 self.process_map[hash].reset_cleanup_timer()
                 logger.debug("Cleanup time for hls proxy %s reseted." % (str(self.path)))
 
-        super().do_GET()
+        try:
+            super().do_GET()
+        except:
+            pass
 
     def translate_path(self, path):
         if path.startswith('/proxy/'):
