@@ -3,7 +3,7 @@
 import logging
 import argparse
 import m3u8
-from urllib.parse import urljoin
+from urllib.parse import urlparse, urlunparse
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from m3u8_generator import PlaylistGenerator
@@ -70,6 +70,41 @@ def request_url(url, timeout = 30, retry = 3, retry_delay = 1, header = None, co
     if done:
         return buffer.getvalue()
     raise RuntimeError('Download %s failed.' % (url))
+
+def urljoin(base, url):
+    bscheme, bnetloc, bpath, bparams, bquery, bfragment = \
+            urlparse(base, '', True)
+    scheme, netloc, path, params, query, fragment = \
+            urlparse(url, bscheme, True)
+    if scheme != bscheme or netloc:
+        return url
+
+    base_parts = bpath.split('/')
+    if base_parts[-1] != '':
+        del base_parts[-1]
+
+    if path[:1] == '/':
+        segments = path.split('/')
+    else:
+        segments = base_parts + path.split('/')
+
+    resolved_path = []
+
+    for seg in segments:
+        if seg == '..':
+            try:
+                resolved_path.pop()
+            except IndexError:
+                pass
+        elif seg == '.':
+            continue
+        else:
+            resolved_path.append(seg)
+
+    if segments[-1] in ('.', '..'):
+        resolved_path.append('')
+
+    return urlunparse((bscheme, bnetloc, '/'.join(resolved_path) or '/', params, query, fragment))
 
 playlist_retry_count = 0     # 网络请求重试计数器
 
