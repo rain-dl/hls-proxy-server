@@ -22,6 +22,11 @@ import shutil
 import logging
 import time
 import hashlib
+import pycurl
+from io import BytesIO
+import certifi
+import gevent
+import re
 
 logger = logging.getLogger("HLS Downloader")
 logger.setLevel(logging.INFO)
@@ -62,10 +67,68 @@ class HlsProxyProcess:
         self.cleanup_timer = Timer(self.cleanup_time, self.cleanup)
         self.cleanup_timer.start()
 
+def request_url(url, timeout = 5, retry = 3, retry_delay = 1, header = None, cookie = None):
+    retry_by_resume = True
+
+    buffer = BytesIO()
+    c = pycurl.Curl()
+    c.setopt(pycurl.URL, url)
+    c.setopt(pycurl.WRITEDATA, buffer)
+    c.setopt(pycurl.CAINFO, certifi.where())
+    c.setopt(pycurl.FOLLOWLOCATION, False)
+    c.setopt(pycurl.FAILONERROR, True)
+    if header is not None:
+        c.setopt(pycurl.HTTPHEADER, header)
+    if header is None or len([x for x in header if str.lower(x).startswith('user-agent')]) == 0:
+        c.setopt(pycurl.USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0')
+    if cookie is not None:
+        c.setopt(pycurl.COOKIE, cookie)
+
+    redirect_url = None
+    content_type = None
+    done = False
+    for i in range(retry):
+        try:
+            if retry_by_resume:
+                c.setopt(pycurl.RESUME_FROM, buffer.tell())
+            else:
+                buffer.truncate(0)
+            c.setopt(pycurl.TIMEOUT_MS, int(timeout * 1000) if retry_by_resume else int(timeout * 2000))
+            c.perform()
+            response_code = c.getinfo(pycurl.RESPONSE_CODE)
+            if response_code == 301 or response_code == 302:
+                redirect_url = c.getinfo(pycurl.REDIRECT_URL)
+            else:
+                content_type = c.getinfo(pycurl.CONTENT_TYPE)
+            c.close()
+            done = True
+            break
+        except pycurl.error as e:
+            if e.args[0] == pycurl.E_OPERATION_TIMEDOUT:
+                if retry_by_resume:
+                    logger.warning('Download %s timeout, retry and resume from %d' % (url, buffer.tell()))
+                else:
+                    logger.warning('Download %s timeout, retrying' % (url))
+            elif e.args[0] == pycurl.E_HTTP_NOT_FOUND:
+                c.close()
+                return 404, 'text/html; charset=utf-8', "Not found.", None
+            elif e.args[0] == pycurl.E_RANGE_ERROR:
+                logger.warning('Server doesn''t support byte ranges, retry with full download.')
+                retry_by_resume = False
+            else:
+                logger.warning('Download %s failed, error: %s, retrying' % (url, str(e)))
+                gevent.sleep(retry_delay)
+
+    if done:
+        return response_code, redirect_url, content_type, buffer.getvalue()
+    else:
+        return 504, None, 'text/html; charset=utf-8', "Gateway time-out.", None
+
 class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, process_map=None, cleanup_default=120, hls_proxy_config=None, verbose=False, **kwargs):
+    def __init__(self, *args, process_map=None, cleanup_default=120, hls_proxy_config=None, base_uri="http://127.0.0.1:8090", verbose=False, **kwargs):
         self.process_map = process_map
         self.hls_proxy_config = hls_proxy_config if hls_proxy_config is not None else { "hls_proxies": [] }
+        self.base_uri = base_uri
         self.verbose = verbose
         self.cleanup_default = cleanup_default
         super().__init__(*args, **kwargs)
@@ -119,6 +182,29 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
             else:
                 self.process_map[hash].reset_cleanup_timer()
                 logger.debug("Cleanup time for hls proxy %s reseted." % (str(self.path)))
+
+        if self.path.startswith('/fetch/'):
+            url = self.path[7:]
+            response_code, redirect_url, content_type, content = request_url(url)
+            self.send_response(response_code)
+            if response_code == 301 or response_code == 302:
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Access-Control-Allow-Methods', 'GET')
+                self.send_header('Access-Control-Allow-Headers', 'Content-Type, Content-Length, Authorization')
+                redirect_url = re.sub(r'(https?://)', self.base_uri + r'/fetch/\1', redirect_url)
+                self.send_header('Location', redirect_url)
+            if content_type is not None:
+                self.send_header('Content-type', content_type)
+            self.end_headers()
+
+            try:
+                content = content.decode('utf8')
+                content = re.sub(r'(https?://)', self.base_uri + r'/fetch/\1', content)
+                self.wfile.write(bytes(content, 'UTF-8'))
+            except:
+                self.wfile.write(content)
+
+            return
 
         try:
             super().do_GET()
@@ -178,10 +264,13 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Crawl a HLS Playlist')
+    parser.add_argument('-u', '--base_uri', type=str, default="http://127.0.0.1", help='Host name of HTTP server.')
     parser.add_argument('-p', '--port', type=int, required=True, help='Binding port of HTTP server.')
     parser.add_argument('-d', '--directory', type=str, required=True, help='HTTP server base directory.')
     parser.add_argument('-e', '--cleanup', type=int, default=120, help='The default cleanup time.')
     parser.add_argument('-c', '--conf', type=str, default=None, help='HLS proxy path mapping config.')
+    parser.add_argument('--cert', type=str, default=None, help='Https cert file.')
+    parser.add_argument('--key', type=str, default=None, help='Https key file.')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode.')
     args = parser.parse_args()
 
@@ -193,13 +282,17 @@ if __name__ == '__main__':
         except Exception as ex:
             logger.error("Failed to load hls proxy path mapping config file. Error: %s" %(str(ex)))
 
+    # if not args.base_uri.endswith(f':{args.port}'):
+    #     args.base_uri += f':{args.port}'
+
     if args.verbose:
         logger.setLevel(logging.DEBUG)
 
     process_map = {}
 
     HandlerClass = functools.partial(HLSProxyHTTPRequestHandler, directory=args.directory, process_map=process_map,
-                                     cleanup_default=args.cleanup, hls_proxy_config=hls_proxy_config, verbose=args.verbose)
+                                     cleanup_default=args.cleanup, hls_proxy_config=hls_proxy_config, base_uri=args.base_uri,
+                                     verbose=args.verbose)
     ServerClass  = ThreadingHTTPServer
     #Protocol     = "HTTP/1.0"
 
@@ -208,8 +301,14 @@ if __name__ == '__main__':
     #HandlerClass.protocol_version = Protocol
     httpd = ServerClass(server_address, HandlerClass)
 
+    server_type = "HTTP"
+    if args.cert is not None and args.key is not None:
+        import ssl
+        httpd.socket = ssl.wrap_socket(httpd.socket, certfile=args.cert, keyfile=args.key, server_side=True)
+        server_type = "HTTPS"
+
     sa = httpd.socket.getsockname()
-    logger.info("Serving HTTP on %s:%s..." % (sa[0], sa[1]))
+    logger.info("Serving %s on %s:%s..." % (server_type, sa[0], sa[1]))
 
     try:
         httpd.serve_forever()
