@@ -269,6 +269,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Crawl a HLS Playlist')
     parser.add_argument('-u', '--base_uri', type=str, default="http://127.0.0.1:8090", help='Host name of HTTP server.')
+    parser.add_argument('-b', '--binding', type=str, default="127.0.0.1", help='Binding address of HTTP server.')
     parser.add_argument('-p', '--port', type=int, required=True, help='Binding port of HTTP server.')
     parser.add_argument('-d', '--directory', type=str, required=True, help='HTTP server base directory.')
     parser.add_argument('-e', '--cleanup', type=int, default=120, help='The default cleanup time.')
@@ -309,7 +310,7 @@ if __name__ == '__main__':
     ServerClass  = ThreadingHTTPServer
     #Protocol     = "HTTP/1.0"
 
-    server_address = ('0.0.0.0', args.port)
+    server_address = (args.binding, args.port)
 
     #HandlerClass.protocol_version = Protocol
     httpd = ServerClass(server_address, HandlerClass)
