@@ -20,6 +20,7 @@ import argparse
 import os
 import shutil
 import logging
+import logging.handlers
 import time
 import hashlib
 import pycurl
@@ -30,14 +31,9 @@ import re
 
 logger = logging.getLogger("HLS Downloader")
 logger.setLevel(logging.INFO)
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-formatter = logging.Formatter("%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s")
-ch.setFormatter(formatter)
-logger.addHandler(ch)
 
 class HlsProxyProcess:
-    def __init__(self, process_map, path, url, m3u8dir, m3u8file, cleanup_time, verbose):
+    def __init__(self, process_map, path, url, m3u8dir, m3u8file, cleanup_time, verbose, log_file):
         self.process_map = process_map
         self.path = path
         self.url = url
@@ -48,6 +44,9 @@ class HlsProxyProcess:
         cmd = ['python', script, '-d', self.m3u8dir, '-m', self.m3u8file, '-s', '6', '-r', '10', '--auto_refresh', '3600', self.url]
         if verbose:
             cmd.append('-v')
+        if log_file is not None:
+            cmd.append('--log')
+            cmd.append(log_file)
         self.process = subprocess.Popen(cmd, shell=False)
         logger.info('Launched hls-downloader to proxy %s.' % (self.url))
         self.cleanup_timer = Timer(self.cleanup_time, self.cleanup)
@@ -125,11 +124,13 @@ def request_url(url, timeout = 5, retry = 3, retry_delay = 1, header = None, coo
         return 504, None, 'text/html; charset=utf-8', "Gateway time-out.", None
 
 class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, process_map=None, cleanup_default=120, hls_proxy_config=None, base_uri="http://127.0.0.1:8090", verbose=False, **kwargs):
+    def __init__(self, *args, process_map=None, cleanup_default=120, hls_proxy_config=None,
+                 base_uri="http://127.0.0.1:8090", verbose=False, hls_log=None, **kwargs):
         self.process_map = process_map
         self.hls_proxy_config = hls_proxy_config if hls_proxy_config is not None else { "hls_proxies": [] }
         self.base_uri = base_uri
         self.verbose = verbose
+        self.hls_log = hls_log
         self.cleanup_default = cleanup_default
         super().__init__(*args, **kwargs)
 
@@ -148,7 +149,7 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                 m3u8dir = os.path.join(self.directory, os.path.dirname(self.path)[1:])
                 m3u8file = os.path.basename(self.path)
                 self.process_map[self.path] = HlsProxyProcess(self.process_map, self.path, hls_proxy['url'], m3u8dir, m3u8file,
-                                                              hls_proxy.get('cleanup', self.cleanup_default), self.verbose)
+                                                              hls_proxy.get('cleanup', self.cleanup_default), self.verbose, self.hls_log)
                 logger.info("Hls proxy for path %s launched" % (str(self.path)))
 
                 launch_time = time.time()
@@ -169,7 +170,7 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                 m3u8dir = os.path.join(self.directory, hash)
                 m3u8file = file_name
                 url, cleanup_time = self.extract_cleanup_time(url)
-                self.process_map[hash] = HlsProxyProcess(self.process_map, hash, url, m3u8dir, m3u8file, cleanup_time, self.verbose)
+                self.process_map[hash] = HlsProxyProcess(self.process_map, hash, url, m3u8dir, m3u8file, cleanup_time, self.verbose, self.hls_log)
                 logger.info("Hls proxy for path %s launched" % (url))
 
                 launch_time = time.time()
@@ -259,12 +260,15 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
         if self.verbose:
             SimpleHTTPRequestHandler.log_request(self, code, size)
 
+    def log_message(self, format, *args):
+        logger.debug(format % args)
+
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     pass
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Crawl a HLS Playlist')
-    parser.add_argument('-u', '--base_uri', type=str, default="http://127.0.0.1", help='Host name of HTTP server.')
+    parser.add_argument('-u', '--base_uri', type=str, default="http://127.0.0.1:8090", help='Host name of HTTP server.')
     parser.add_argument('-p', '--port', type=int, required=True, help='Binding port of HTTP server.')
     parser.add_argument('-d', '--directory', type=str, required=True, help='HTTP server base directory.')
     parser.add_argument('-e', '--cleanup', type=int, default=120, help='The default cleanup time.')
@@ -272,6 +276,8 @@ if __name__ == '__main__':
     parser.add_argument('--cert', type=str, default=None, help='Https cert file.')
     parser.add_argument('--key', type=str, default=None, help='Https key file.')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode.')
+    parser.add_argument('--log', type=str, default=None, help='Log file path name.')
+    parser.add_argument('--hls_log', type=str, default=None, help='Hls downloader Log file path name.')
     args = parser.parse_args()
 
     hls_proxy_config = None
@@ -288,11 +294,18 @@ if __name__ == '__main__':
     if args.verbose:
         logger.setLevel(logging.DEBUG)
 
+    if args.log is not None:
+        log_handler = logging.handlers.TimedRotatingFileHandler(filename=args.log, when='D', backupCount=10, encoding='utf-8')
+    else:
+        log_handler = logging.StreamHandler()
+    log_handler.setFormatter(logging.Formatter("%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s"))
+    logger.addHandler(log_handler)
+
     process_map = {}
 
     HandlerClass = functools.partial(HLSProxyHTTPRequestHandler, directory=args.directory, process_map=process_map,
                                      cleanup_default=args.cleanup, hls_proxy_config=hls_proxy_config, base_uri=args.base_uri,
-                                     verbose=args.verbose)
+                                     verbose=args.verbose, hls_log=args.hls_log)
     ServerClass  = ThreadingHTTPServer
     #Protocol     = "HTTP/1.0"
 

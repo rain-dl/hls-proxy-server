@@ -1,6 +1,7 @@
 ﻿#!/usr/bin/python
 
 import logging
+import logging.handlers
 import argparse
 import m3u8
 from urllib.parse import urlparse, urlunparse
@@ -14,6 +15,10 @@ import certifi
 import gevent
 import signal
 from datetime import datetime
+
+# logger用于配置和发送日志消息。可以通过logging.getLogger(name)获取logger对象，如果不指定name则返回root对象
+logger = logging.getLogger('HLS Downloader')
+logger.setLevel(logging.DEBUG)
 
 playlist_download_timeout = 6
 playlist_max_retry = 10  # 网络请求重试次数上限
@@ -43,6 +48,7 @@ def request_url(url, timeout = 30, retry = 3, retry_delay = 1, header = None, co
     if cookie is not None:
         c.setopt(pycurl.COOKIE, cookie)
 
+    effective_url = None
     done = False
     for i in range(retry):
         try:
@@ -51,6 +57,7 @@ def request_url(url, timeout = 30, retry = 3, retry_delay = 1, header = None, co
             else:
                 buffer.truncate(0)
             c.perform()
+            effective_url = c.getinfo(pycurl.EFFECTIVE_URL)
             c.close()
             done = True
             break
@@ -68,7 +75,7 @@ def request_url(url, timeout = 30, retry = 3, retry_delay = 1, header = None, co
                 gevent.sleep(retry_delay)
 
     if done:
-        return buffer.getvalue()
+        return buffer.getvalue(), effective_url
     raise RuntimeError('Download %s failed.' % (url))
 
 def urljoin(base, url):
@@ -175,10 +182,9 @@ def get_one(seq, url, duration):
 
     logger.debug('Processing segment #%d, url: %s' % (seq, url))
 
-    retry_count = 0
     while True:
         try:
-            content = request_url(url, duration, segment_max_retry)
+            content, _ = request_url(url, duration, segment_max_retry)
             decode_and_write(content, seq, duration)
             break
         except Exception as e:
@@ -192,7 +198,10 @@ def get_one(seq, url, duration):
             break
 
 def get_stream_uri(playlist_url, header, cookie):
-    content = request_url(playlist_url, header=header, cookie=cookie)
+    content, effective_url = request_url(playlist_url, header=header, cookie=cookie)
+
+    if effective_url is not None:
+        playlist_url = effective_url
 
     #--------------------------根据分辨率或者比特率，解析二级m3u8（如果有的话）---------------------------
     content = content.decode('utf8')
@@ -225,27 +234,6 @@ def get_stream_uri(playlist_url, header, cookie):
     return stream_uri
 
 if __name__ == '__main__':
-    # logger用于配置和发送日志消息。可以通过logging.getLogger(name)获取logger对象，如果不指定name则返回root对象
-    logger = logging.getLogger('HLS Downloader')
-    logger.setLevel(logging.INFO)
-
-    # handler用于将日志记录发送到合适的目的地
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.DEBUG)
-
-    # formatter用于指定日志记录输出的具体格式
-    formatter = logging.Formatter('%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s')
-    ch.setFormatter(formatter)
-
-    logger.addHandler(ch)   # 一个logger对象可以通过addHandler方法添加多个handler，每个handler又可以定义不同日志级别，以实现日志分级过滤显示
-
-    #-----------------------------创建文件Handler并将其绑定到logger-------------------------
-    #logf = logging.FileHandler('hls.log')
-    #logf.setLevel(logging.DEBUG)
-    #logf.setFormatter(formatter)
-    #logger.addHandler(logf)
-    #---------------------------------------------------------------------------------------
-
     parser = argparse.ArgumentParser(description='Crawl a HLS Playlist')
     parser.add_argument('url', type=str, help='Playlist URL')   # 必须参数，指定m3u8文件的下载链接
     parser.add_argument('-d', '--directory', type=str, help='Output directory for m3u8 and ts file')
@@ -253,6 +241,7 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--m3u8size', type=int, help='Output m3u8 list size')   # 输出的m3u8文件的条目数量
     parser.add_argument('-r', '--retry', type=int, default=segment_max_retry, help='Retry count')   # 下载ts片段的最大重试次数
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode')
+    parser.add_argument('--log', type=str, default=None, help='Log file path name.')
     parser.add_argument('--auto_refresh', type=int, default=0, help='Interval for refreshing the original url.')
     parser.add_argument('--header', action='append', type=str, help='HTTP header')
     parser.add_argument('--cookie', default=None, type=str, help='HTTP Cookie header')
@@ -260,6 +249,13 @@ if __name__ == '__main__':
 
     if args.verbose:
         logger.setLevel(logging.DEBUG)
+
+    if args.log is not None:
+        log_handler = logging.handlers.TimedRotatingFileHandler(filename=args.log, when='D', backupCount=10, encoding='utf-8')
+    else:
+        log_handler = logging.StreamHandler()
+    log_handler.setFormatter(logging.Formatter("%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s"))
+    logger.addHandler(log_handler)
 
     playlist_url = args.url
     logger.info('Playlist URL: ' + playlist_url)
@@ -313,7 +309,7 @@ if __name__ == '__main__':
 
     while not quit:
         try:
-            content = request_url(stream_uri, playlist_download_timeout, playlist_max_retry, header=args.header, cookie=args.cookie)
+            content, _ = request_url(stream_uri, playlist_download_timeout, playlist_max_retry, header=args.header, cookie=args.cookie)
         except Exception as e:
             logger.error('Failed to download chunk list.')
             continue
