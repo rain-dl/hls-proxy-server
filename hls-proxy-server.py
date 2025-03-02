@@ -126,10 +126,9 @@ def request_url(url, timeout = 5, retry = 3, retry_delay = 1, header = None, coo
         return 504, None, 'text/html; charset=utf-8', "Gateway time-out.", None
 
 class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, process_map=None, cleanup_default=120, hls_proxy_config=None,
+    def __init__(self, *args, process_map=None, cleanup_default=120,
                  base_uri="http://127.0.0.1:8090", verbose=False, hls_log=None, **kwargs):
         self.process_map = process_map
-        self.hls_proxy_config = hls_proxy_config if hls_proxy_config is not None else { "hls_proxies": [] }
         self.base_uri = base_uri
         self.verbose = verbose
         self.hls_log = hls_log
@@ -144,26 +143,6 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
             content = json.dumps(list(map(lambda p: {'path': p.path, 'url': p.url}, self.process_map.values())))
             self.wfile.write(bytes(content, 'UTF-8'))
             return
-
-        if self.path in self.hls_proxy_config['hls_proxies']:
-            hls_proxy = self.hls_proxy_config['hls_proxies'][self.path]
-            if self.path not in self.process_map.keys():
-                m3u8dir = os.path.join(self.directory, os.path.dirname(self.path)[1:])
-                m3u8file = os.path.basename(self.path)
-                self.process_map[self.path] = HlsProxyProcess(self.process_map, self.path, hls_proxy['url'], m3u8dir, m3u8file,
-                                                              hls_proxy.get('cleanup', self.cleanup_default), self.verbose, self.hls_log)
-                logger.info("Hls proxy for path %s launched" % (str(self.path)))
-
-                launch_time = time.time()
-                time.sleep(1)
-                m3u8fullname = os.path.join(m3u8dir, m3u8file)
-                retry = 20
-                while retry > 0 and (not os.path.exists(m3u8fullname) or os.path.getmtime(m3u8fullname) < launch_time):
-                    retry -= 1
-                    time.sleep(0.5)
-            else:
-                self.process_map[self.path].reset_cleanup_timer()
-                logger.debug("Cleanup time for hls proxy %s reseted." % (str(self.path)))
 
         if self.path.startswith('/proxy/'):
             url, base_url, file_name = self.get_proxy_url(self.path)
@@ -285,21 +264,12 @@ if __name__ == '__main__':
     parser.add_argument('-p', '--port', type=int, required=True, help='Binding port of HTTP server.')
     parser.add_argument('-d', '--directory', type=str, required=True, help='HTTP server base directory.')
     parser.add_argument('-e', '--cleanup', type=int, default=120, help='The default cleanup time.')
-    parser.add_argument('-c', '--conf', type=str, default=None, help='HLS proxy path mapping config.')
     parser.add_argument('--cert', type=str, default=None, help='Https cert file.')
     parser.add_argument('--key', type=str, default=None, help='Https key file.')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode.')
     parser.add_argument('--log', type=str, default=None, help='Log file path name.')
     parser.add_argument('--hls_log', type=str, default=None, help='Hls downloader Log file path name.')
     args = parser.parse_args()
-
-    hls_proxy_config = None
-    if args.conf is not None:
-        try:
-            with open(args.conf, 'r') as fp:
-                hls_proxy_config = json.load(fp)
-        except Exception as ex:
-            logger.error("Failed to load hls proxy path mapping config file. Error: %s" %(str(ex)))
 
     # if not args.base_uri.endswith(f':{args.port}'):
     #     args.base_uri += f':{args.port}'
@@ -317,7 +287,7 @@ if __name__ == '__main__':
     process_map = {}
 
     HandlerClass = functools.partial(HLSProxyHTTPRequestHandler, directory=args.directory, process_map=process_map,
-                                     cleanup_default=args.cleanup, hls_proxy_config=hls_proxy_config, base_uri=args.base_uri,
+                                     cleanup_default=args.cleanup, base_uri=args.base_uri,
                                      verbose=args.verbose, hls_log=args.hls_log)
     ServerClass  = ThreadingHTTPServer
     #Protocol     = "HTTP/1.0"
