@@ -153,8 +153,10 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.send_header('Access-Control-Allow-Methods', 'GET')
                 self.send_header('Access-Control-Allow-Headers', 'Content-Type, Content-Length, Authorization')
-                redirect_url = re.sub(r'(https?://)', self.base_uri + r'/proxy/\1', stream_uri)
+                redirect_url = re.sub(r'(?<!/)(https?://)', self.base_uri + r'/proxy/\1', stream_uri, count=1)
                 self.send_header('Location', redirect_url)
+                self.end_headers()
+                return
 
             hash = self.get_url_hash(base_url)
             if hash not in self.process_map.keys():
@@ -183,7 +185,7 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.send_header('Access-Control-Allow-Methods', 'GET')
                 self.send_header('Access-Control-Allow-Headers', 'Content-Type, Content-Length, Authorization')
-                redirect_url = re.sub(r'(https?://)', self.base_uri + r'/fetch/\1', redirect_url)
+                redirect_url = re.sub(r'(?<!/)(https?://)', self.base_uri + r'/fetch/\1', redirect_url)
                 self.send_header('Location', redirect_url)
             if content_type is not None:
                 self.send_header('Content-type', content_type)
