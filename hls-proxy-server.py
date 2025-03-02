@@ -28,6 +28,8 @@ from io import BytesIO
 import certifi
 import gevent
 import re
+import importlib
+hls_downloader = importlib.import_module('hls-downloader')
 
 logger = logging.getLogger("HLS Downloader")
 logger.setLevel(logging.INFO)
@@ -165,6 +167,16 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
 
         if self.path.startswith('/proxy/'):
             url, base_url, file_name = self.get_proxy_url(self.path)
+
+            stream_uri = hls_downloader.get_stream_uri(url, None, None)
+            if stream_uri != url:
+                self.send_response(301)
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Access-Control-Allow-Methods', 'GET')
+                self.send_header('Access-Control-Allow-Headers', 'Content-Type, Content-Length, Authorization')
+                redirect_url = re.sub(r'(https?://)', self.base_uri + r'/proxy/\1', stream_uri)
+                self.send_header('Location', redirect_url)
+
             hash = self.get_url_hash(base_url)
             if hash not in self.process_map.keys():
                 m3u8dir = os.path.join(self.directory, hash)
