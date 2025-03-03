@@ -5,7 +5,7 @@
 # Author:      RAiN
 #
 # Created:     05-03-2020
-# Copyright:   (c) RAiN 2023
+# Copyright:   (c) RAiN 2025
 # Licence:     GPL
 #-------------------------------------------------------------------------------
 
@@ -68,7 +68,7 @@ class HlsProxyProcess:
         self.cleanup_timer = Timer(self.cleanup_time, self.cleanup)
         self.cleanup_timer.start()
 
-def request_url(url, timeout = 5, retry = 3, retry_delay = 1, header = None, cookie = None):
+def request_url(url, request_range = None, timeout = 5, retry = 3, retry_delay = 1, header = None, cookie = None):
     retry_by_resume = True
 
     buffer = BytesIO()
@@ -84,9 +84,29 @@ def request_url(url, timeout = 5, retry = 3, retry_delay = 1, header = None, coo
         c.setopt(pycurl.USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0')
     if cookie is not None:
         c.setopt(pycurl.COOKIE, cookie)
+    if request_range:
+        start, end = request_range
+        if start is not None:
+            if end is not None:
+                range_header = f"{start}-{end}"
+            else:
+                range_header = f"{start}-"
+        else:
+            if end is not None:
+                range_header = f"-{end}"
+        c.setopt(pycurl.RANGE, range_header)
+
+    response_header = {}
+    def header_callback(x):
+        kv = x.decode('ascii').split(':')
+        if len(kv) < 2:
+            return
+        response_header[kv[0].strip()] = kv[1].strip()
+    c.setopt(pycurl.HEADERFUNCTION, header_callback)
 
     redirect_url = None
     content_type = None
+    content_range = None
     done = False
     for i in range(retry):
         try:
@@ -101,6 +121,7 @@ def request_url(url, timeout = 5, retry = 3, retry_delay = 1, header = None, coo
                 redirect_url = c.getinfo(pycurl.REDIRECT_URL)
             else:
                 content_type = c.getinfo(pycurl.CONTENT_TYPE)
+                content_range = response_header.get('Content-Range')
             c.close()
             done = True
             break
@@ -121,9 +142,44 @@ def request_url(url, timeout = 5, retry = 3, retry_delay = 1, header = None, coo
                 gevent.sleep(retry_delay)
 
     if done:
-        return response_code, redirect_url, content_type, buffer.getvalue()
+        return response_code, redirect_url, content_type, content_range, buffer.getvalue()
     else:
-        return 504, None, 'text/html; charset=utf-8', "Gateway time-out.", None
+        return 504, None, 'text/html; charset=utf-8', None, "Gateway time-out."
+
+def parse_range_header(header):
+    if not header.startswith('bytes='):
+        raise ValueError('Invalid Range header')
+    ranges = header[6:].split(',')
+    if len(ranges) > 1:
+        raise ValueError('Multiple ranges not supported')
+    start, end = ranges[0].split('-')
+    try:
+        if start:
+            start = int(start)
+        else:
+            start = None
+        if end:
+            end = int(end)
+        else:
+            end = None
+        if start is None and end is None:
+            raise ValueError('Invalid Range header')
+        return (start, end)
+    except ValueError:
+        raise ValueError('Invalid Range header')
+
+def copy_byte_range(infile, outfile, start=None, stop=None, bufsize=16*1024):
+    """Like shutil.copyfileobj, but only copy a range of the streams.
+
+    Both start and stop are inclusive.
+    """
+    if start is not None: infile.seek(start)
+    while 1:
+        to_read = min(bufsize, stop + 1 - infile.tell() if stop else bufsize)
+        buf = infile.read(to_read)
+        if not buf:
+            break
+        outfile.write(buf)
 
 class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, process_map=None, cleanup_default=120,
@@ -136,6 +192,15 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, **kwargs)
 
     def do_GET(self):
+        if 'Range' in self.headers:
+            try:
+                request_range = parse_range_header(self.headers['Range'])
+            except ValueError:
+                self.send_error(400, 'Invalid Range header')
+                return
+        else:
+            request_range = None
+
         if self.path == '/status':
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
@@ -179,7 +244,8 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
 
         if self.path.startswith('/fetch/'):
             url = self.path[7:]
-            response_code, redirect_url, content_type, content = request_url(url)
+
+            response_code, redirect_url, content_type, content_range, content = request_url(url, request_range=request_range)
             self.send_response(response_code)
             if response_code == 301 or response_code == 302:
                 self.send_header('Access-Control-Allow-Origin', '*')
@@ -189,6 +255,9 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                 self.send_header('Location', redirect_url)
             if content_type is not None:
                 self.send_header('Content-type', content_type)
+            if content_range is not None:
+                self.send_header('Content-Range', content_range)
+                self.send_header('Accept-Ranges', 'bytes')
             self.end_headers()
 
             try:
@@ -201,9 +270,50 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            super().do_GET()
-        except:
-            pass
+            path = self.translate_path(self.path)
+            f = None
+            try:
+                f = open(path, 'rb')
+            except OSError:
+                self.send_error(404, "File not found")
+                return None
+
+            try:
+                fs = os.fstat(f.fileno())
+                file_len = fs[6]
+
+                if request_range:
+                    start, end = request_range
+                    if start is None:
+                        if end > file_len:
+                            self.send_error(416, 'Requested range not satisfiable')
+                            return None
+                        start = file_len - end
+                        end = file_len - 1
+                    else:
+                        if start >= file_len:
+                            self.send_error(416, 'Requested range not satisfiable')
+                            return None
+                        if end is None or end >= file_len:
+                            end = file_len - 1
+                    content_length = end - start + 1
+
+                    self.send_response(206)
+                    self.send_header('Content-Range', 'bytes %d-%d/%d' % (start, end, file_len))
+                else:
+                    content_length = file_len
+                    self.send_response(200)
+
+                self.send_header('Accept-Ranges', 'bytes')
+                self.send_header('Content-Length', str(content_length))
+                self.send_header('Content-type', self.guess_type(path))
+                self.end_headers()
+
+                copy_byte_range(f, self.wfile, start, end)
+            finally:
+                f.close()
+        except Exception as e:
+            logger.error(repr(e))
 
     def translate_path(self, path):
         if path.startswith('/proxy/'):
