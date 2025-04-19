@@ -210,20 +210,23 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if self.path.startswith('/proxy/'):
-            url, base_url, file_name = self.get_proxy_url(self.path)
-
+            url = self.path[7:]
+            hash = self.get_url_hash(url)
             stream_uri = hls_downloader.get_stream_uri(url, None, None)
-            if stream_uri != url:
-                self.send_response(301)
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.send_header('Access-Control-Allow-Methods', 'GET')
-                self.send_header('Access-Control-Allow-Headers', 'Content-Type, Content-Length, Authorization')
-                redirect_url = re.sub(r'(?<!/)(https?://)', self.base_uri + r'/proxy/\1', stream_uri, count=1)
-                self.send_header('Location', redirect_url)
-                self.end_headers()
-                return
+            proxy_prefix = self.base_uri + f'/p/{hash}/'
 
-            hash = self.get_url_hash(base_url)
+            self.send_response(301)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type, Content-Length, Authorization')
+            redirect_url = re.sub(r'(?<!/)(https?://)', proxy_prefix + r'\1', stream_uri, count=1)
+            self.send_header('Location', redirect_url)
+            self.end_headers()
+            return
+
+        if self.path.startswith('/p/'):
+            hash, url, base_url, file_name = self.get_proxy_url(self.path)
+
             if hash not in self.process_map.keys():
                 m3u8dir = os.path.join(self.directory, hash)
                 m3u8file = file_name
@@ -301,6 +304,8 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                     self.send_response(206)
                     self.send_header('Content-Range', 'bytes %d-%d/%d' % (start, end, file_len))
                 else:
+                    start = None
+                    end = None
                     content_length = file_len
                     self.send_response(200)
 
@@ -316,20 +321,21 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
             logger.error(repr(e))
 
     def translate_path(self, path):
-        if path.startswith('/proxy/'):
-            _, base_url, file_name = self.get_proxy_url(path)
-            hash = self.get_url_hash(base_url)
+        if path.startswith('/p/'):
+            hash, _, _, file_name = self.get_proxy_url(path)
             return os.path.join(os.path.join(self.directory, hash), file_name)
         return super().translate_path(path)
 
     def get_proxy_url(self, path):
-        url = path[7:]
+        ss = path[3:].split('/', 1)
+        url_hash = ss[0]
+        url = ss[1]
 
         # abandon query parameters
         base_url = url.split('?',1)[0]
         base_url = base_url.split('#',1)[0]
         base_url, file_name = base_url.rsplit('/', 1)
-        return url, base_url, file_name
+        return url_hash, url, base_url, file_name
 
     def get_url_hash(self, url):
         md5 = hashlib.md5()
