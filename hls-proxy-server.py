@@ -183,9 +183,9 @@ def copy_byte_range(infile, outfile, start=None, stop=None, bufsize=16*1024):
 
 class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, process_map=None, cleanup_default=120,
-                 base_uri="http://127.0.0.1:8090", verbose=False, hls_log=None, **kwargs):
+                 protocol="HTTP", verbose=False, hls_log=None, **kwargs):
         self.process_map = process_map
-        self.base_uri = base_uri
+        self.protocol = protocol.lower()
         self.verbose = verbose
         self.hls_log = hls_log
         self.cleanup_default = cleanup_default
@@ -213,7 +213,7 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
             url = self.path[7:]
             hash = self.get_url_hash(url)
             stream_uri = hls_downloader.get_stream_uri(url, None, None)
-            proxy_prefix = self.base_uri + f'/p/{hash}/'
+            proxy_prefix = self.protocol + "://" + self.headers['Host'] + f'/p/{hash}/'
 
             self.send_response(301)
             self.send_header('Access-Control-Allow-Origin', '*')
@@ -254,7 +254,7 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.send_header('Access-Control-Allow-Methods', 'GET')
                 self.send_header('Access-Control-Allow-Headers', 'Content-Type, Content-Length, Authorization')
-                redirect_url = re.sub(r'(?<!/)(https?://)', self.base_uri + r'/fetch/\1', redirect_url)
+                redirect_url = re.sub(r'(?<!/)(https?://)', self.protocol + "://" + self.headers['Host'] + r'/fetch/\1', redirect_url)
                 self.send_header('Location', redirect_url)
             if content_type is not None:
                 self.send_header('Content-type', content_type)
@@ -265,7 +265,7 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
 
             try:
                 content = content.decode('utf8')
-                content = re.sub(r'(https?://)', self.base_uri + r'/fetch/\1', content)
+                content = re.sub(r'(https?://)', self.protocol + "://" + self.headers['Host'] + r'/fetch/\1', content)
                 self.wfile.write(bytes(content, 'UTF-8'))
             except:
                 self.wfile.write(content)
@@ -377,7 +377,6 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Crawl a HLS Playlist')
-    parser.add_argument('-u', '--base_uri', type=str, default="http://127.0.0.1:8090", help='Host name of HTTP server.')
     parser.add_argument('-b', '--binding', type=str, default="127.0.0.1", help='Binding address of HTTP server.')
     parser.add_argument('-p', '--port', type=int, required=True, help='Binding port of HTTP server.')
     parser.add_argument('-d', '--directory', type=str, required=True, help='HTTP server base directory.')
@@ -389,9 +388,6 @@ if __name__ == '__main__':
     parser.add_argument('--hls_log', type=str, default=None, help='Hls downloader Log file path name.')
     args = parser.parse_args()
 
-    # if not args.base_uri.endswith(f':{args.port}'):
-    #     args.base_uri += f':{args.port}'
-
     if args.verbose:
         logger.setLevel(logging.DEBUG)
 
@@ -402,10 +398,14 @@ if __name__ == '__main__':
     log_handler.setFormatter(logging.Formatter("%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s"))
     logger.addHandler(log_handler)
 
+    server_type = "HTTP"
+    if args.cert is not None and args.key is not None:
+        server_type = "HTTPS"
+
     process_map = {}
 
     HandlerClass = functools.partial(HLSProxyHTTPRequestHandler, directory=args.directory, process_map=process_map,
-                                     cleanup_default=args.cleanup, base_uri=args.base_uri,
+                                     cleanup_default=args.cleanup, protocol=server_type,
                                      verbose=args.verbose, hls_log=args.hls_log)
     ServerClass  = ThreadingHTTPServer
     #Protocol     = "HTTP/1.0"
@@ -415,11 +415,9 @@ if __name__ == '__main__':
     #HandlerClass.protocol_version = Protocol
     httpd = ServerClass(server_address, HandlerClass)
 
-    server_type = "HTTP"
-    if args.cert is not None and args.key is not None:
+    if server_type == "HTTPS":
         import ssl
         httpd.socket = ssl.wrap_socket(httpd.socket, certfile=args.cert, keyfile=args.key, server_side=True)
-        server_type = "HTTPS"
 
     sa = httpd.socket.getsockname()
     logger.info("Serving %s on %s:%s..." % (server_type, sa[0], sa[1]))
