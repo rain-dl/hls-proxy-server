@@ -43,7 +43,7 @@ class HlsProxyProcess:
         self.m3u8file = m3u8file
         self.cleanup_time = cleanup_time
         script = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'hls-downloader.py')
-        cmd = ['python', script, '-d', self.m3u8dir, '-m', self.m3u8file, '-s', '6', '-r', '10', '--auto_refresh', '3600', self.url]
+        cmd = ['python', script, '-d', self.m3u8dir, '-m', self.m3u8file, '-s', '6', '-t', '10', '--auto_refresh', '3600', self.url]
         if verbose:
             cmd.append('-v')
         if log_file is not None:
@@ -182,7 +182,7 @@ def copy_byte_range(infile, outfile, start=None, stop=None, bufsize=16*1024):
         outfile.write(buf)
 
 class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, process_map=None, cleanup_default=120,
+    def __init__(self, *args, process_map: dict, cleanup_default=120,
                  protocol="HTTP", verbose=False, hls_log=None, **kwargs):
         self.process_map = process_map
         self.protocol = protocol.lower()
@@ -212,7 +212,9 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
         if self.path.startswith('/proxy/'):
             url = self.path[7:]
             hash = self.get_url_hash(url)
-            stream_uri = hls_downloader.get_stream_uri(url, None, None)
+            url, desired_resolution = self.extract_url_and_resolution(url)
+
+            stream_uri = hls_downloader.get_stream_uri(url, None, None, desired_resolution)
             proxy_prefix = self.protocol + "://" + self.headers['Host'] + f'/p/{hash}/'
 
             self.send_response(301)
@@ -336,6 +338,19 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
         base_url = base_url.split('#',1)[0]
         base_url, file_name = base_url.rsplit('/', 1)
         return url_hash, url, base_url, file_name
+
+    def extract_url_and_resolution(self, path: str):
+        if path.startswith('http'):
+            return path, 0
+        ss = path.split('/', 1)
+        if len(ss) == 1:
+            return path, 0
+        path = ss[1]
+        try:
+            desired_resolution = int(ss[0])
+            return path, desired_resolution
+        except ValueError:
+            return path, 0
 
     def get_url_hash(self, url):
         md5 = hashlib.md5()

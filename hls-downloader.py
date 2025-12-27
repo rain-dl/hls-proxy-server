@@ -197,7 +197,7 @@ def get_one(seq, url, duration):
             update_playlist()
             break
 
-def get_stream_uri(playlist_url, header, cookie):
+def get_stream_uri(playlist_url, header, cookie, desired_resolution: int = 0):
     content, effective_url = request_url(playlist_url, header=header, cookie=cookie)
 
     if effective_url is not None:
@@ -220,11 +220,15 @@ def get_stream_uri(playlist_url, header, cookie):
     #------------------------------------------------------------------------------------------------------
 
     #-----------------------------选取最终要下载的ts视频列表对应的m3u8链接地址-----------------------------
-    auto_highest = True # 是否自动选取最高画质的那个ts视频列表
-    stream_res = 0
-
-    if auto_highest and len(variant_m3u8.playlists) > 0:    # 如果存在二级m3u8索引
-        stream_res = max(streams_uri)
+    if len(variant_m3u8.playlists) > 0:    # 如果存在二级m3u8索引
+        if desired_resolution > 0:
+            matched_resolutions = [r for r in sorted(list(streams_uri.keys())) if r >= desired_resolution]
+            if len(matched_resolutions) > 0:
+                stream_res = matched_resolutions[0]
+            else:
+                stream_res = max(streams_uri)
+        else:
+            stream_res = max(streams_uri)
         logger.info('Stream picked: %dp' % stream_res)
         stream_uri = streams_uri[stream_res]
     else: # 如果没有二级m3u8索引，那么就选一级m3u8索引即可（说明没有可选的其他画质）
@@ -236,10 +240,11 @@ def get_stream_uri(playlist_url, header, cookie):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Crawl a HLS Playlist')
     parser.add_argument('url', type=str, help='Playlist URL')   # 必须参数，指定m3u8文件的下载链接
+    parser.add_argument('-r', '--resolution', type=int, default=0, help='Desired resolution to pick')   # 指定最低分辨率
     parser.add_argument('-d', '--directory', type=str, help='Output directory for m3u8 and ts file')
     parser.add_argument('-m', '--m3u8', type=str, help='Output m3u8 File')   # 输出的m3u8文件
     parser.add_argument('-s', '--m3u8size', type=int, help='Output m3u8 list size')   # 输出的m3u8文件的条目数量
-    parser.add_argument('-r', '--retry', type=int, default=segment_max_retry, help='Retry count')   # 下载ts片段的最大重试次数
+    parser.add_argument('-t', '--retry', type=int, default=segment_max_retry, help='Retry count')   # 下载ts片段的最大重试次数
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode')
     parser.add_argument('--log', type=str, default=None, help='Log file path name.')
     parser.add_argument('--auto_refresh', type=int, default=0, help='Interval for refreshing the original url.')
@@ -289,7 +294,7 @@ if __name__ == '__main__':
             pass
 
     try:
-        stream_uri = get_stream_uri(playlist_url, args.header, args.cookie)
+        stream_uri = get_stream_uri(playlist_url, args.header, args.cookie, args.resolution)
     except Exception as e:
         logger.error(str(e))
         logger.error('Failed to access main playlist.')
@@ -348,7 +353,7 @@ if __name__ == '__main__':
 
         if args.auto_refresh > 0 and stream_uri != playlist_url and (datetime.now() - last_playlist_url_refresh_time).total_seconds() > args.auto_refresh:
             try:
-                stream_uri = get_stream_uri(playlist_url, args.header, args.cookie)
+                stream_uri = get_stream_uri(playlist_url, args.header, args.cookie, args.resolution)
                 last_playlist_url_refresh_time = datetime.now()
                 logger.info('Refreshed playlist URL: ' + stream_uri)
             except Exception as e:
