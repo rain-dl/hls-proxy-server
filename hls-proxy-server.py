@@ -280,7 +280,7 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.send_header('Access-Control-Allow-Methods', 'GET')
                 self.send_header('Access-Control-Allow-Headers', 'Content-Type, Content-Length, Authorization')
-                redirect_url = re.sub(r'(?<!/)(https?://)', self.protocol + "://" + self.headers['Host'] + r'/fetch/\1', redirect_url)
+                redirect_url = re.sub(r'(?<!/)(https?://)', self.headers.get("X-Forwarded-Proto", self.protocol) + "://" + self.headers['Host'] + r'/fetch/\1', redirect_url)
                 self.send_header('Location', redirect_url)
             if content_type is not None:
                 self.send_header('Content-type', content_type)
@@ -291,7 +291,7 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
 
             try:
                 content = content.decode('utf8')
-                content = re.sub(r'(https?://)', self.protocol + "://" + self.headers['Host'] + r'/fetch/\1', content)
+                content = re.sub(r'(https?://)', self.headers.get("X-Forwarded-Proto", self.protocol) + "://" + self.headers['Host'] + r'/fetch/\1', content)
                 self.wfile.write(bytes(content, 'UTF-8'))
             except:
                 self.wfile.write(content)
@@ -304,13 +304,13 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
 
             desired_resolution = int(params.get('sr', 0))
             stream_uri = hls_downloader.get_stream_uri(url, None, None, desired_resolution)
-            proxy_prefix = self.protocol + "://" + self.headers['Host'] + f'/p/{hash}/'
+            proxy_prefix = self.headers.get("X-Forwarded-Proto", self.protocol) + "://" + self.headers['Host'] + f'/p/{hash}/'
 
             self.send_response(301)
             self.send_header('Access-Control-Allow-Origin', '*')
             self.send_header('Access-Control-Allow-Methods', 'GET')
             self.send_header('Access-Control-Allow-Headers', 'Content-Type, Content-Length, Authorization')
-            redirect_url = re.sub(r'(?<!/)(https?://)', proxy_prefix + r'\1', stream_uri, count=1)
+            redirect_url = proxy_prefix + stream_uri
             self.send_header('Location', redirect_url)
             self.end_headers()
             return
@@ -322,7 +322,7 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
 
             desired_resolution = int(params.get('sr', 0))
             stream_uri = hls_downloader.get_stream_uri(url, None, None, desired_resolution)
-            proxy_prefix = self.protocol + "://" + self.headers['Host'] + f'/t/{hash}/'
+            proxy_prefix = self.headers.get("X-Forwarded-Proto", self.protocol) + "://" + self.headers['Host'] + f'/t/{hash}/'
 
             self.send_response(301)
             self.send_header('Access-Control-Allow-Origin', '*')
