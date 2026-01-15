@@ -14,7 +14,7 @@ from http.server import HTTPServer
 from socketserver import ThreadingMixIn
 import functools
 import subprocess
-from threading import Timer
+from threading import Timer, Lock
 import json
 import argparse
 import os
@@ -251,6 +251,7 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
         self.hls_log = hls_log
         self.cleanup_default = cleanup_default
         self.max_transcoder_instances = max_transcoder_instances
+        self.lock = Lock()
         super().__init__(*args, **kwargs)
 
     def do_GET(self):
@@ -340,45 +341,47 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
         if self.path.startswith('/t/'):
             hash, url, params, base_url, file_name = self.get_transcode_url_and_parameters(self.path)
 
-            if hash not in self.process_map.keys():
-                m3u8dir = os.path.join(self.directory, hash)
-                m3u8file = file_name
-                url, cleanup_time = self.extract_cleanup_time(url)
-                self.process_map[hash] = HlsTranscodeProcess(self.process_map, hash, url, m3u8dir, m3u8file, cleanup_time, params)
-                logger.info("Hls transcoder for path %s launched" % (url))
-                self.check_transcoder_instance_count()
+            with self.lock:
+                if hash not in self.process_map.keys():
+                    m3u8dir = os.path.join(self.directory, hash)
+                    m3u8file = file_name
+                    url, cleanup_time = self.extract_cleanup_time(url)
+                    self.process_map[hash] = HlsTranscodeProcess(self.process_map, hash, url, m3u8dir, m3u8file, cleanup_time, params)
+                    logger.info("Hls transcoder for path %s launched" % (url))
+                    self.check_transcoder_instance_count()
 
-                launch_time = time.time()
-                time.sleep(1)
-                m3u8fullname = os.path.join(m3u8dir, m3u8file)
-                retry = 20
-                while retry > 0 and (not os.path.exists(m3u8fullname) or os.path.getmtime(m3u8fullname) < launch_time):
-                    retry -= 1
-                    time.sleep(0.5)
-            else:
-                self.process_map[hash].reset_cleanup_timer()
-                logger.debug("Cleanup time for hls transcoder %s reseted." % (str(self.path)))
+                    launch_time = time.time()
+                    time.sleep(1)
+                    m3u8fullname = os.path.join(m3u8dir, m3u8file)
+                    retry = 20
+                    while retry > 0 and (not os.path.exists(m3u8fullname) or os.path.getmtime(m3u8fullname) < launch_time):
+                        retry -= 1
+                        time.sleep(0.5)
+                else:
+                    self.process_map[hash].reset_cleanup_timer()
+                    logger.debug("Cleanup time for hls transcoder %s reseted." % (str(self.path)))
 
         if self.path.startswith('/p/'):
             hash, url, base_url, file_name = self.get_proxy_url(self.path)
 
-            if hash not in self.process_map.keys():
-                m3u8dir = os.path.join(self.directory, hash)
-                m3u8file = file_name
-                url, cleanup_time = self.extract_cleanup_time(url)
-                self.process_map[hash] = HlsProxyProcess(self.process_map, hash, url, m3u8dir, m3u8file, cleanup_time, self.verbose, self.hls_log)
-                logger.info("Hls proxy for path %s launched" % (url))
+            with self.lock:
+                if hash not in self.process_map.keys():
+                    m3u8dir = os.path.join(self.directory, hash)
+                    m3u8file = file_name
+                    url, cleanup_time = self.extract_cleanup_time(url)
+                    self.process_map[hash] = HlsProxyProcess(self.process_map, hash, url, m3u8dir, m3u8file, cleanup_time, self.verbose, self.hls_log)
+                    logger.info("Hls proxy for path %s launched" % (url))
 
-                launch_time = time.time()
-                time.sleep(1)
-                m3u8fullname = os.path.join(m3u8dir, m3u8file)
-                retry = 20
-                while retry > 0 and (not os.path.exists(m3u8fullname) or os.path.getmtime(m3u8fullname) < launch_time):
-                    retry -= 1
-                    time.sleep(0.5)
-            else:
-                self.process_map[hash].reset_cleanup_timer()
-                logger.debug("Cleanup time for hls proxy %s reseted." % (str(self.path)))
+                    launch_time = time.time()
+                    time.sleep(1)
+                    m3u8fullname = os.path.join(m3u8dir, m3u8file)
+                    retry = 20
+                    while retry > 0 and (not os.path.exists(m3u8fullname) or os.path.getmtime(m3u8fullname) < launch_time):
+                        retry -= 1
+                        time.sleep(0.5)
+                else:
+                    self.process_map[hash].reset_cleanup_timer()
+                    logger.debug("Cleanup time for hls proxy %s reseted." % (str(self.path)))
 
         try:
             # path = self.translate_path(self.path)
