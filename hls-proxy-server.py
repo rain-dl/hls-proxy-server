@@ -244,14 +244,14 @@ def copy_byte_range(infile, outfile, start=None, stop=None, bufsize=16*1024):
 
 class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, process_map: dict, cleanup_default=120, max_transcoder_instances=3,
-                 protocol="HTTP", verbose=False, hls_log=None, **kwargs):
+                 protocol="HTTP", verbose=False, hls_log=None, lock: Lock = None, **kwargs):
         self.process_map = process_map
         self.protocol = protocol.lower()
         self.verbose = verbose
         self.hls_log = hls_log
         self.cleanup_default = cleanup_default
         self.max_transcoder_instances = max_transcoder_instances
-        self.lock = Lock()
+        self.lock = lock if lock is not None else Lock()
         super().__init__(*args, **kwargs)
 
     def do_GET(self):
@@ -347,7 +347,7 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                     m3u8file = file_name
                     url, cleanup_time = self.extract_cleanup_time(url)
                     self.process_map[hash] = HlsTranscodeProcess(self.process_map, hash, url, m3u8dir, m3u8file, cleanup_time, params)
-                    logger.info("Hls transcoder for path %s launched" % (url))
+                    logger.info("Hls transcoder %s for path %s launched" % (hash, url))
                     self.check_transcoder_instance_count()
 
                     launch_time = time.time()
@@ -559,10 +559,11 @@ if __name__ == '__main__':
         server_type = "HTTPS"
 
     process_map = {}
+    lock = Lock()
 
     HandlerClass = functools.partial(HLSProxyHTTPRequestHandler, directory=args.directory, process_map=process_map,
                                      cleanup_default=args.cleanup, max_transcoder_instances=args.max_transcoder, protocol=server_type,
-                                     verbose=args.verbose, hls_log=args.hls_log)
+                                     verbose=args.verbose, hls_log=args.hls_log, lock=lock)
     ServerClass  = ThreadingHTTPServer
     #Protocol     = "HTTP/1.0"
 
