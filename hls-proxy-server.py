@@ -34,10 +34,42 @@ hls_downloader = importlib.import_module('hls-downloader')
 logger = logging.getLogger("HLS Downloader")
 logger.setLevel(logging.INFO)
 
+def Dump(process_map):
+    now = time.time()
+    lines = [f"process_map size={len(process_map)}"]
+    for hash_key in sorted(process_map.keys()):
+        process_instance = process_map[hash_key]
+        process_type = type(process_instance).__name__
+        process_obj = getattr(process_instance, 'process', None)
+        pid = getattr(process_obj, 'pid', '-')
+        url = getattr(process_instance, 'url', '-')
+        m3u8dir = getattr(process_instance, 'm3u8dir', '-')
+        m3u8file = getattr(process_instance, 'm3u8file', '-')
+        last_reset_time = getattr(process_instance, 'last_reset_time', None)
+        if isinstance(last_reset_time, (int, float)):
+            idle_seconds = "%.1f" % max(0, now - last_reset_time)
+        else:
+            idle_seconds = "-"
+        lines.append(
+            "hash=%s type=%s pid=%s idle=%ss dir=%s file=%s url=%s" % (
+                hash_key,
+                process_type,
+                pid,
+                idle_seconds,
+                m3u8dir,
+                m3u8file,
+                url
+            )
+        )
+    content = "\n".join(lines)
+    logger.debug(content)
+    return content
+
 class HlsProxyProcess:
-    def __init__(self, process_map, path, url, m3u8dir, m3u8file, cleanup_time, verbose, log_file):
+    def __init__(self, process_map, lock, hash, url, m3u8dir, m3u8file, cleanup_time, verbose, log_file):
         self.process_map = process_map
-        self.path = path
+        self.lock = lock
+        self.hash = hash
         self.url = url
         self.m3u8dir = m3u8dir
         self.m3u8file = m3u8file
@@ -50,36 +82,53 @@ class HlsProxyProcess:
             cmd.append('--log')
             cmd.append(log_file)
         self.process = subprocess.Popen(cmd, shell=False)
-        logger.info('Launched hls-downloader to proxy %s.' % (self.url))
+        self.pid = self.process.pid
+        logger.info('Launched hls-downloader %s (pid=%d) to proxy %s.' % (self.hash, self.pid, self.url))
         self.cleanup_timer = Timer(self.cleanup_time, self.cleanup)
         self.cleanup_timer.start()
 
         self.last_reset_time = time.time()
 
     def cleanup(self):
-        logger.info('Terminating hls-downloader for %s...' % (self.url))
-        if self.path in self.process_map.keys():
-            self.process_map.pop(self.path)
+        logger.info('Terminating hls-downloader %s (pid=%d) for %s...' % (self.hash, self.pid, self.url))
+        self.cleanup_timer.cancel()
+        rmdir = False
+        if self.lock.locked():
+            if self.hash in self.process_map.keys():
+                self.process_map.pop(self.hash)
+                rmdir = True
+            Dump(self.process_map)
+        else:
+            with self.lock:
+                if self.hash in self.process_map.keys():
+                    self.process_map.pop(self.hash)
+                    rmdir = True
+                Dump(self.process_map)
         self.process.terminate()
         self.process.wait()
-        shutil.rmtree(self.m3u8dir)
-        logger.info('hls-downloader for %s terminated.' % (self.url))
+        if rmdir:
+            shutil.rmtree(self.m3u8dir, ignore_errors=True)
+        logger.info('hls-downloader %s (pid=%d) for %s terminated.' % (self.hash, self.pid, self.url))
 
     def reset_cleanup_timer(self):
         if self.process is None or not self.process.poll() is not None:
-            logger.info('hls-downloader for %s has terminated unexpectedly.' % (self.url))
-            if self.path in self.process_map.keys():
-                self.process_map.pop(self.path)
+            logger.info('hls-downloader %s (pid=%d) for %s has terminated unexpectedly.' % (self.hash, self.pid, self.url))
+            if self.hash in self.process_map.keys():
+                self.process_map.pop(self.hash)
+            Dump(self.process_map)
+            return False
         else:
             self.cleanup_timer.cancel()
             self.cleanup_timer = Timer(self.cleanup_time, self.cleanup)
             self.cleanup_timer.start()
             self.last_reset_time = time.time()
+            return True
 
 class HlsTranscodeProcess:
-    def __init__(self, process_map, path, url, m3u8dir, m3u8file, cleanup_time, params: dict):
+    def __init__(self, process_map, lock, hash, url, m3u8dir, m3u8file, cleanup_time, params: dict):
         self.process_map = process_map
-        self.path = path
+        self.lock = lock
+        self.hash = hash
         self.url = url
         self.m3u8dir = m3u8dir
         self.m3u8file = m3u8file
@@ -90,9 +139,13 @@ class HlsTranscodeProcess:
         v_bitrate = params.get('vb', '1M')
         v_max_bitrate = params.get('vmax', None)
         a_bitrate = params.get('ab', '128K')
+        format = params.get('f', None)
 
         os.makedirs(self.m3u8dir, exist_ok=True)
-        cmd = ['ffmpeg', '-loglevel', 'error', '-i', self.url]
+        cmd = ['ffmpeg', '-loglevel', 'quiet']
+        if format is not None:
+            cmd.extend(['-f', format])
+        cmd.extend(['-i', self.url])
         if resolution is not None:
             cmd.extend(['-s', resolution])
         cmd.extend(['-c:v', 'libx264', '-preset', preset, '-g', '90', '-b:v', v_bitrate])
@@ -102,32 +155,48 @@ class HlsTranscodeProcess:
         cmd.extend(['-f', 'hls', '-hls_time', '3', '-segment_wrap', '10', '-hls_list_size', '6', '-hls_flags', 'delete_segments'])
         cmd.append(os.path.join(self.m3u8dir, self.m3u8file))
         self.process = subprocess.Popen(cmd, shell=False)
-        logger.info('Launched ffmpeg to transcode %s.' % (self.url))
+        self.pid = self.process.pid
+        logger.info('Launched ffmpeg transcoder %s (pid=%d) to transcode %s.' % (self.hash, self.pid, self.url))
         self.cleanup_timer = Timer(self.cleanup_time, self.cleanup)
         self.cleanup_timer.start()
 
         self.last_reset_time = time.time()
 
     def cleanup(self):
-        logger.info('Terminating ffmpeg transcoder for %s...' % (self.url))
-        if self.path in self.process_map.keys():
-            self.process_map.pop(self.path)
+        logger.info('Terminating ffmpeg transcoder %s (pid=%d) for %s...' % (self.hash, self.pid, self.url))
+        self.cleanup_timer.cancel()
+        rmdir = False
+        if self.lock.locked():
+            if self.hash in self.process_map.keys():
+                self.process_map.pop(self.hash)
+                rmdir = True
+            Dump(self.process_map)
+        else:
+            with self.lock:
+                if self.hash in self.process_map.keys():
+                    self.process_map.pop(self.hash)
+                    rmdir = True
+                Dump(self.process_map)
         self.process.send_signal(15)
         self.process.wait()
-        shutil.rmtree(self.m3u8dir)
-        logger.info('ffmpeg transcoder for %s terminated.' % (self.url))
+        if rmdir:
+            shutil.rmtree(self.m3u8dir, ignore_errors=True)
+        logger.info('ffmpeg transcoder %s (pid=%d) for %s terminated.' % (self.hash, self.pid, self.url))
 
     def reset_cleanup_timer(self):
         exit_code = self.process.poll()
         if exit_code is not None:
-            logger.info('ffmpeg transcoder for %s has terminated unexpectedly.' % (self.url))
-            if self.path in self.process_map.keys():
-                self.process_map.pop(self.path)
+            logger.info('ffmpeg transcoder %s (pid=%d) for %s has terminated unexpectedly.' % (self.hash, self.pid, self.url))
+            if self.hash in self.process_map.keys():
+                self.process_map.pop(self.hash)
+            Dump(self.process_map)
+            return False
         else:
             self.cleanup_timer.cancel()
             self.cleanup_timer = Timer(self.cleanup_time, self.cleanup)
             self.cleanup_timer.start()
             self.last_reset_time = time.time()
+            return True
 
 def request_url(url, request_range = None, timeout = 5, retry = 3, retry_delay = 1, header = None, cookie = None):
     retry_by_resume = True
@@ -244,15 +313,21 @@ def copy_byte_range(infile, outfile, start=None, stop=None, bufsize=16*1024):
 
 class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, process_map: dict, cleanup_default=120, max_transcoder_instances=3,
-                 protocol="HTTP", verbose=False, hls_log=None, **kwargs):
+                 protocol="HTTP", verbose=False, hls_log=None, lock: Lock = None, **kwargs):
         self.process_map = process_map
         self.protocol = protocol.lower()
         self.verbose = verbose
         self.hls_log = hls_log
         self.cleanup_default = cleanup_default
         self.max_transcoder_instances = max_transcoder_instances
-        self.lock = Lock()
+        self.lock = lock if lock is not None else Lock()
         super().__init__(*args, **kwargs)
+
+    def handle(self):
+        try:
+            super().handle()
+        except ConnectionResetError as e:
+            logger.error('[Errno 104] Connection reset by peer')
 
     def do_GET(self):
         if 'Range' in self.headers:
@@ -346,9 +421,10 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                     m3u8dir = os.path.join(self.directory, hash)
                     m3u8file = file_name
                     url, cleanup_time = self.extract_cleanup_time(url)
-                    self.process_map[hash] = HlsTranscodeProcess(self.process_map, hash, url, m3u8dir, m3u8file, cleanup_time, params)
-                    logger.info("Hls transcoder for path %s launched" % (url))
+                    self.process_map[hash] = HlsTranscodeProcess(self.process_map, self.lock, hash, url, m3u8dir, m3u8file, cleanup_time, params)
+                    logger.info("Hls transcoder %s for path %s launched" % (hash, url))
                     self.check_transcoder_instance_count()
+                    Dump(self.process_map)
 
                     launch_time = time.time()
                     time.sleep(1)
@@ -358,8 +434,11 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                         retry -= 1
                         time.sleep(0.5)
                 else:
-                    self.process_map[hash].reset_cleanup_timer()
-                    logger.debug("Cleanup time for hls transcoder %s reseted." % (str(self.path)))
+                    if self.process_map[hash].reset_cleanup_timer():
+                        logger.debug("Cleanup time for hls transcoder %s reseted." % (hash))
+                    else:
+                        self.send_error(404, "File not found")
+                        return None
 
         if self.path.startswith('/p/'):
             hash, url, base_url, file_name = self.get_proxy_url(self.path)
@@ -369,8 +448,9 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                     m3u8dir = os.path.join(self.directory, hash)
                     m3u8file = file_name
                     url, cleanup_time = self.extract_cleanup_time(url)
-                    self.process_map[hash] = HlsProxyProcess(self.process_map, hash, url, m3u8dir, m3u8file, cleanup_time, self.verbose, self.hls_log)
-                    logger.info("Hls proxy for path %s launched" % (url))
+                    self.process_map[hash] = HlsProxyProcess(self.process_map, self.lock, hash, url, m3u8dir, m3u8file, cleanup_time, self.verbose, self.hls_log)
+                    logger.info("Hls proxy %s for path %s launched" % (hash, url))
+                    Dump(self.process_map)
 
                     launch_time = time.time()
                     time.sleep(1)
@@ -380,8 +460,11 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
                         retry -= 1
                         time.sleep(0.5)
                 else:
-                    self.process_map[hash].reset_cleanup_timer()
-                    logger.debug("Cleanup time for hls proxy %s reseted." % (str(self.path)))
+                    if self.process_map[hash].reset_cleanup_timer():
+                        logger.debug("Cleanup time for hls proxy %s reseted." % (hash))
+                    else:
+                        self.send_error(404, "File not found")
+                        return None
 
         try:
             # path = self.translate_path(self.path)
@@ -518,6 +601,7 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
             transcoder_hashs = sorted(transcoder_hashs, key=lambda x: self.process_map[x].last_reset_time)
             while len(transcoder_hashs) > self.max_transcoder_instances:
                 hash = transcoder_hashs.pop(0)
+                logger.info("Hls transcoder %s for %s is cleaning up to control transcoder instance count..." % (hash, self.process_map[hash].url))
                 self.process_map[hash].cleanup()
 
     def log_request(self, code='-', size='-'):
@@ -559,10 +643,11 @@ if __name__ == '__main__':
         server_type = "HTTPS"
 
     process_map = {}
+    lock = Lock()
 
     HandlerClass = functools.partial(HLSProxyHTTPRequestHandler, directory=args.directory, process_map=process_map,
                                      cleanup_default=args.cleanup, max_transcoder_instances=args.max_transcoder, protocol=server_type,
-                                     verbose=args.verbose, hls_log=args.hls_log)
+                                     verbose=args.verbose, hls_log=args.hls_log, lock=lock)
     ServerClass  = ThreadingHTTPServer
     #Protocol     = "HTTP/1.0"
 
