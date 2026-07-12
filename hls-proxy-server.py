@@ -111,7 +111,8 @@ class HlsProxyProcess:
         logger.info('hls-downloader %s (pid=%d) for %s terminated.' % (self.hash, self.pid, self.url))
 
     def reset_cleanup_timer(self):
-        if self.process is None or not self.process.poll() is not None:
+        exit_code = self.process.poll()
+        if exit_code is not None:
             logger.info('hls-downloader %s (pid=%d) for %s has terminated unexpectedly.' % (self.hash, self.pid, self.url))
             if self.hash in self.process_map.keys():
                 self.process_map.pop(self.hash)
