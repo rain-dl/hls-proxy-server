@@ -17,6 +17,7 @@ import subprocess
 from threading import Timer, Lock
 import json
 import argparse
+import sys
 import os
 import shutil
 import logging
@@ -75,7 +76,7 @@ class HlsProxyProcess:
         self.m3u8file = m3u8file
         self.cleanup_time = cleanup_time
         script = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'hls-downloader.py')
-        cmd = ['python', script, '-d', self.m3u8dir, '-m', self.m3u8file, '-s', '6', '-t', '10', '--auto_refresh', '3600', self.url]
+        cmd = [sys.executable, script, '-d', self.m3u8dir, '-m', self.m3u8file, '-s', '6', '-t', '10', '--auto_refresh', '3600', self.url]
         if verbose:
             cmd.append('-v')
         if log_file is not None:
