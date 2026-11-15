@@ -30,6 +30,7 @@ import certifi
 import gevent
 import re
 import importlib
+from urllib.parse import urljoin
 hls_downloader = importlib.import_module('hls-downloader')
 
 logger = logging.getLogger("HLS Downloader")
@@ -369,7 +370,15 @@ class HLSProxyHTTPRequestHandler(SimpleHTTPRequestHandler):
 
             try:
                 content = content.decode('utf8')
-                content = re.sub(r'(https?://)', self.headers.get("X-Forwarded-Proto", self.protocol) + "://" + self.headers['Host'] + r'/fetch/\1', content)
+                proxy_prefix = self.headers.get("X-Forwarded-Proto", self.protocol) + "://" + self.headers['Host'] + '/fetch/'
+                content = re.sub(r'(https?://)', proxy_prefix + r'\1', content)
+                is_playlist = content.lstrip('\ufeff \t\r\n').startswith('#EXTM3U')
+                if is_playlist:
+                    content = re.sub(
+                        r'(?m)^(/[^\r\n]*)',
+                        lambda match: proxy_prefix + urljoin(url, match.group(1)),
+                        content
+                    )
                 self.wfile.write(bytes(content, 'UTF-8'))
             except:
                 self.wfile.write(content)
